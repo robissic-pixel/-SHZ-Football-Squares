@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomizeDigits, getDigits } from "../../../../lib/kv";
-
-const ADMIN_SECRET = process.env.ADMIN_SECRET!;
+import { requireEnv } from "../../../../lib/env";
 
 export async function POST(req: NextRequest) {
+  const ADMIN_SECRET = requireEnv("ADMIN_SECRET");
   const auth = req.headers.get("x-admin-secret");
   if (auth !== ADMIN_SECRET) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

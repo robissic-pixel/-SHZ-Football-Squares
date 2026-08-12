@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { lockSquare, getAllSquares } from "../../../lib/kv";
+import { lockSquare, getAllSquares, entriesAreOpen, claimAmoeEmail } from "../../../lib/kv";
 
 /**
  * Free Alternative Method of Entry.
@@ -20,6 +20,28 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       { error: "Name, email, and mailing address are required." },
       { status: 400 }
+    );
+  }
+
+  // Block new entries once the digits have been drawn — same reasoning as
+  // the paid checkout path: an entry after the draw no longer has the same
+  // odds as everyone who entered before it.
+  if (!(await entriesAreOpen())) {
+    return NextResponse.json(
+      { error: "Entries are closed — numbers have already been drawn." },
+      { status: 409 }
+    );
+  }
+
+  // One free entry per email address. Without this, the same person (or a
+  // script) could submit repeatedly and claim every open square for free,
+  // which both defeats the paid revenue model and isn't really "one
+  // entry" in the spirit of an AMOE.
+  const emailAvailable = await claimAmoeEmail(email);
+  if (!emailAvailable) {
+    return NextResponse.json(
+      { error: "This email has already been used for a free entry." },
+      { status: 409 }
     );
   }
 
