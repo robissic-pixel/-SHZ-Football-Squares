@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { kv } from "@vercel/kv";
-import { lockSquare, releaseSquare } from "@/lib/kv";
+import { lockSquare, releaseSquare } from "../../../../lib/kv";
 
 const WEBHOOK_SECRET = process.env.WHOP_WEBHOOK_SECRET!; // the part after "whsec_"
 

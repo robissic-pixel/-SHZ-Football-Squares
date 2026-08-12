@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getAllSquares, getDigits } from "@/lib/kv";
+import { getAllSquares, getDigits } from "../../../lib/kv";
 
 export async function GET() {
   const squares = await getAllSquares();

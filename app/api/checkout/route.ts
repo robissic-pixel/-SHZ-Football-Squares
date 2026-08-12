@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { holdSquare, releaseSquare } from "@/lib/kv";
+import { holdSquare, releaseSquare } from "../../../lib/kv";
 
 const WHOP_API_KEY = process.env.WHOP_API_KEY!;
 const WHOP_PLAN_ID = process.env.WHOP_PLAN_ID!; // the $10 plan for one square

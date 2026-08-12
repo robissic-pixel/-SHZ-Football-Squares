@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { lockSquare, getAllSquares } from "@/lib/kv";
+import { lockSquare, getAllSquares } from "../../../lib/kv";
 
 /**
  * Free Alternative Method of Entry.

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { randomizeDigits, getDigits } from "@/lib/kv";
+import { randomizeDigits, getDigits } from "../../../../lib/kv";
 
 const ADMIN_SECRET = process.env.ADMIN_SECRET!;
 
