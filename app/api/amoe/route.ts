@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { lockSquare, getAllSquares } from "../../../lib/kv";
+import { lockSquare, getAllSquares, entriesAreOpen, claimAmoeEmail, isBoard } from "../../../lib/kv";
+import { kv } from "@vercel/kv";
 
 /**
  * Free Alternative Method of Entry.
@@ -14,38 +15,55 @@ import { lockSquare, getAllSquares } from "../../../lib/kv";
  * odds, no purchase" mechanics but does not by itself guarantee compliance.
  */
 export async function POST(req: NextRequest) {
-  const { name, email, mailingAddress } = await req.json();
+  const { board, name, email, mailingAddress } = await req.json();
 
-  if (!name || !email || !mailingAddress) {
+  if (!isBoard(board) || !name || !email || !mailingAddress) {
     return NextResponse.json(
-      { error: "Name, email, and mailing address are required." },
+      { error: "Board, name, email, and mailing address are required." },
       { status: 400 }
     );
   }
 
-  // Auto-assign a random open square so free entrants can't cherry-pick
-  // (paid entrants can't meaningfully cherry-pick either, since digits are
-  // randomized after the board fills — but this keeps the entry flow itself
-  // free of any appearance of unequal treatment).
-  const all = await getAllSquares();
+  // Block new entries once the digits have been drawn for this board.
+  if (!(await entriesAreOpen(board))) {
+    return NextResponse.json(
+      { error: "Entries are closed for this board — numbers have already been drawn." },
+      { status: 409 }
+    );
+  }
+
+  // One free entry per email address per board. Without this, the same
+  // person (or a script) could submit repeatedly and claim every open
+  // square for free, which both defeats the paid revenue model and isn't
+  // really "one entry" in the spirit of an AMOE. A person can still enter
+  // both boards once each, since silver and gold are independent pools.
+  const emailAvailable = await claimAmoeEmail(board, email);
+  if (!emailAvailable) {
+    return NextResponse.json(
+      { error: "This email has already been used for a free entry on this board." },
+      { status: 409 }
+    );
+  }
+
+  // Auto-assign a random open square so free entrants can't cherry-pick.
+  const all = await getAllSquares(board);
   const open = all.filter((s) => s.status === "open");
 
   if (open.length === 0) {
-    return NextResponse.json({ error: "Board is full." }, { status: 409 });
+    return NextResponse.json({ error: "This board is full." }, { status: 409 });
   }
 
   const chosen = open[Math.floor(Math.random() * open.length)];
-  await lockSquare(chosen.id, "free", name, email);
+  await lockSquare(board, chosen.id, "free", name, email);
 
   // Persist the mailing address + AMOE record separately for compliance
   // record-keeping (not stored on the square itself).
-  const { kv } = await import("@vercel/kv");
-  await kv.set(`amoe:${chosen.id}`, {
+  await kv.set(`amoe:${board}:${chosen.id}`, {
     name,
     email,
     mailingAddress,
     submittedAt: new Date().toISOString(),
   });
 
-  return NextResponse.json({ squareId: chosen.id });
+  return NextResponse.json({ board, squareId: chosen.id });
 }

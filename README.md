@@ -1,9 +1,12 @@
 # SHZ Football Squares — Sweepstakes Build
 
-Paid entries go through Whop Checkout; free entries go through an
-Alternative Method of Entry (AMOE) form. Both give identical odds, since
-row/column digits are randomized only once the board fills — nobody's
-square choice affects their win chance.
+Two independent 10x10 boards — **Silver ($10/square)** and **Gold
+($20/square)** — each with its own squares, its own digit draw, and its
+own entry cutoff. Paid entries go through Whop Checkout; free entries go
+through an Alternative Method of Entry (AMOE) form. Both give identical
+odds on a given board, since row/column digits are randomized only once
+that board's entries close — nobody's square choice affects their win
+chance.
 
 **This is engineering scaffolding, not legal advice.** Have a Texas
 attorney review the AMOE flow, your official rules page, and prize
@@ -14,21 +17,26 @@ disclosures before you take real money.
 Copy these files into `robissic-pixel/SHZ-Football-Squares`, commit, and
 push to `main`. Vercel will redeploy automatically once it's connected.
 
-## 2. Add a database (Vercel KV)
+## 2. Add a database (Upstash Redis via Vercel Marketplace)
 
-In your Vercel project → **Storage** tab → **Create Database** → choose
-**KV** (Redis-based). Once created, Vercel auto-adds the `KV_*` env vars
-to your project — you don't need to copy them manually.
+In your Vercel project → **Storage** tab → **Create Database** →
+**Upstash** → **Upstash for Redis** (not the "Redis"/"Redis Cloud"
+listing — different provider, different client). During setup, set the
+**Custom Environment Variable Prefix** to `KV` so the generated vars match
+what `@vercel/kv` expects (`KV_REST_API_URL`, `KV_REST_API_TOKEN`).
 
 ## 3. Get your Whop credentials
 
 In your Whop dashboard:
 1. **Developer** tab → create an API key → copy it into `WHOP_API_KEY`
-2. Create a **Plan** for a single square ($10, one-time) → copy its ID into `WHOP_PLAN_ID`
+2. Create **two Plans** — one per board:
+   - $10 one-time plan → its ID goes in `WHOP_PLAN_ID_SILVER`
+   - $20 one-time plan → its ID goes in `WHOP_PLAN_ID_GOLD`
 3. **Developer → Webhooks** → Create Webhook → point it at
    `https://<your-app>.vercel.app/api/webhook/whop` → subscribe to
    `payment.succeeded` and `payment.failed` → copy the secret (after
-   `whsec_`) into `WHOP_WEBHOOK_SECRET`
+   `whsec_`) into `WHOP_WEBHOOK_SECRET`. One webhook covers both boards —
+   the board is carried through in the checkout metadata.
 
 ## 4. Set remaining env vars in Vercel
 
@@ -39,33 +47,44 @@ Project → **Settings → Environment Variables**:
 ## 5. Deploy
 
 Redeploy from the Vercel dashboard (or push another commit). Visit your
-URL — you should see the 10x10 grid.
+URL — you should see a Silver/Gold tab switcher above the 10x10 grid.
 
 ## 6. Test before going live
 
 Whop has a test mode — use test card numbers to confirm a square locks
-automatically after "payment," and that a webhook retry doesn't
-double-lock a square (the handler dedupes by `webhook-id`).
+automatically after "payment" **on the correct board**, and that a
+webhook retry doesn't double-lock a square (the handler dedupes by
+`webhook-id`). Also test the free AMOE form on both boards, and confirm
+the same email is rejected on a second attempt for the *same* board but
+accepted once on the *other* board.
 
-## 7. At kickoff
+## 7. At kickoff — randomize each board separately
 
-Once the board fills (or your cutoff time hits), call:
+Each board is closed independently by calling this once per board:
 
 ```bash
 curl -X POST https://<your-app>.vercel.app/api/admin/randomize \
-  -H "x-admin-secret: <your ADMIN_SECRET>"
+  -H "x-admin-secret: <your ADMIN_SECRET>" \
+  -H "Content-Type: application/json" \
+  -d '{"board": "silver"}'
+
+curl -X POST https://<your-app>.vercel.app/api/admin/randomize \
+  -H "x-admin-secret: <your ADMIN_SECRET>" \
+  -H "Content-Type: application/json" \
+  -d '{"board": "gold"}'
 ```
 
-This randomly assigns 0-9 to each row and column, one time only. After
-this, the board should be taken out of "open for entry" mode — this
-scaffold doesn't auto-close entries, so add a simple flag check in
-`app/page.tsx` / `app/api/checkout/route.ts` for your actual cutoff time.
+This randomly assigns 0-9 to each row and column for that board, one time
+only. As soon as this succeeds for a board, both the paid checkout and
+free AMOE routes automatically start rejecting new entries for that
+specific board — the other board is unaffected until you randomize it too.
 
 ## What still needs a lawyer's eyes
 
 - **Official Rules page** — required for sweepstakes: entry period, odds
   disclosure, eligibility (age/state restrictions), how AMOE works, prize
-  value, void-where-prohibited language
+  value, void-where-prohibited language. Consider whether the two boards
+  need to be disclosed as separate sweepstakes/entry pools.
 - Whether Texas requires AMOE to include a **mail-in** option, not just a
   web form
 - Prize payout mechanics and any 1099 / tax reporting for winners
