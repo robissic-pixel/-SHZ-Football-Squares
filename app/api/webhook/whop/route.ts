@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { kv } from "@vercel/kv";
 import { lockSquare, releaseSquare } from "../../../../lib/kv";
-import { requireEnv } from "../../../../lib/env";
+
+const WEBHOOK_SECRET = process.env.WHOP_WEBHOOK_SECRET!; // the part after "whsec_"
 
 // Whop follows the Standard Webhooks spec:
 // headers: webhook-id, webhook-timestamp, webhook-signature ("v1,<base64 hmac>")
@@ -13,23 +14,17 @@ function verifySignature(
   timestamp: string,
   signatureHeader: string
 ): boolean {
-  const secretKey = Buffer.from(requireEnv("WHOP_WEBHOOK_SECRET"), "base64");
+  const secretKey = Buffer.from(WEBHOOK_SECRET, "base64");
   const signedContent = `${id}.${timestamp}.${rawBody}`;
   const expected = crypto
     .createHmac("sha256", secretKey)
     .update(signedContent)
     .digest("base64");
-  const expectedBuf = Buffer.from(expected);
 
-  const candidates = signatureHeader.split(" ").map((s) => s.split(",")[1] ?? "");
-  return candidates.some((c) => {
-    // timingSafeEqual throws (instead of returning false) if the two
-    // buffers aren't the same byte length, so a malformed/short header
-    // would otherwise crash this route with an unhandled 500 instead of
-    // failing closed with a clean 401.
-    const candidateBuf = Buffer.from(c);
-    return candidateBuf.length === expectedBuf.length && crypto.timingSafeEqual(candidateBuf, expectedBuf);
-  });
+  const candidates = signatureHeader.split(" ").map((s) => s.split(",")[1]);
+  return candidates.some((c) =>
+    crypto.timingSafeEqual(Buffer.from(c ?? ""), Buffer.from(expected))
+  );
 }
 
 export async function POST(req: NextRequest) {
@@ -48,13 +43,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Timestamp too old" }, { status: 400 });
   }
 
-  let signatureValid: boolean;
-  try {
-    signatureValid = verifySignature(rawBody, id, timestamp, signature);
-  } catch (err) {
-    return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
-  }
-  if (!signatureValid) {
+  if (!verifySignature(rawBody, id, timestamp, signature)) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
   }
 
@@ -65,24 +54,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, duplicate: true });
   }
 
-  let event: any;
-  try {
-    event = JSON.parse(rawBody);
-  } catch (err) {
-    return NextResponse.json({ error: "Malformed JSON body" }, { status: 400 });
-  }
+  const event = JSON.parse(rawBody);
 
-  if (event?.type === "payment.succeeded") {
-    const { square_id, buyer_name, buyer_email } = event.data?.metadata ?? {};
+  if (event.type === "payment.succeeded") {
+    const { square_id, buyer_name, buyer_email } = event.data.metadata ?? {};
     const squareId = Number(square_id);
 
     if (Number.isInteger(squareId) && squareId >= 0 && squareId <= 99) {
-      await lockSquare(squareId, "paid", buyer_name, buyer_email, event.data?.id);
+      await lockSquare(squareId, "paid", buyer_name, buyer_email, event.data.id);
     }
   }
 
-  if (event?.type === "payment.failed") {
-    const { square_id } = event.data?.metadata ?? {};
+  if (event.type === "payment.failed") {
+    const { square_id } = event.data.metadata ?? {};
     const squareId = Number(square_id);
     if (Number.isInteger(squareId)) {
       await releaseSquare(squareId);
