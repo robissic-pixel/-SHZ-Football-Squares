@@ -58,6 +58,13 @@ webhook retry doesn't double-lock a square (the handler dedupes by
 the same email is rejected on a second attempt for the *same* board but
 accepted once on the *other* board.
 
+The site now has a full admin panel built in (click "Admin login" and
+enter your `ADMIN_SECRET`) — from there you can rename teams, set the
+house cut and forward/backward payout split, draw numbers, manually
+assign or release a square (e.g. someone paid you in cash), watch the
+pending-checkout queue, enter quarter scores, and see computed winners.
+The same `ADMIN_SECRET` unlocks admin mode on both boards.
+
 ## 7. At kickoff — randomize each board separately
 
 Each board is closed independently by calling this once per board:

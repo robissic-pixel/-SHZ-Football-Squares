@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAllSquares, getDigits, isBoard } from "../../../lib/kv";
+import { getAllSquares, getDigits, getBoardSettings, getQuarters, isBoard } from "../../../lib/kv";
 
 // This route reads live game state from KV on every request. Without this,
 // Next.js's App Router will try to statically generate it at build time
@@ -13,15 +13,27 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Invalid board. Use ?board=silver or ?board=gold." }, { status: 400 });
   }
 
-  const squares = await getAllSquares(boardParam);
-  const digits = await getDigits(boardParam);
+  const [squares, digits, settings, quarters] = await Promise.all([
+    getAllSquares(boardParam),
+    getDigits(boardParam),
+    getBoardSettings(boardParam),
+    getQuarters(boardParam),
+  ]);
 
-  // Never leak buyer emails to the public board.
+  // Admins (identified by the same shared secret used for other admin
+  // routes) can see who's holding a pending square and when that hold
+  // expires, so they can spot and release stuck checkouts. Everyone else
+  // only ever sees owner names for squares that are fully locked in — a
+  // pending buyer's name/email never leaks to other players.
+  const isAdminRequest =
+    !!process.env.ADMIN_SECRET && req.headers.get("x-admin-secret") === process.env.ADMIN_SECRET;
+
   const publicSquares = squares.map((s) => ({
     id: s.id,
     status: s.status,
-    ownerName: s.status === "locked" ? s.ownerName : undefined,
+    ownerName: s.status === "locked" || (isAdminRequest && s.status === "pending") ? s.ownerName : undefined,
+    pendingExpiresAt: isAdminRequest ? s.pendingExpiresAt : undefined,
   }));
 
-  return NextResponse.json({ board: boardParam, squares: publicSquares, digits });
+  return NextResponse.json({ board: boardParam, squares: publicSquares, digits, settings, quarters });
 }

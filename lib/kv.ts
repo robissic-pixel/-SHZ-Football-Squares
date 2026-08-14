@@ -177,3 +177,154 @@ export async function claimAmoeEmail(board: Board, email: string): Promise<boole
   const result = await kv.set(key, true, { nx: true });
   return result !== null;
 }
+
+// --- Admin: direct square assign/release (e.g. cash payment, stuck hold) ---
+
+export async function adminAssignSquare(board: Board, id: number, name: string): Promise<void> {
+  await lockSquare(board, id, "paid", name, "", undefined);
+}
+
+export async function adminReleaseSquare(board: Board, id: number): Promise<void> {
+  await kv.set(SQUARE_KEY(board, id), { id, status: "open" });
+}
+
+// --- Board config: team names, house cut, forward/backward split ---
+
+export interface BoardSettings {
+  homeTeam: string;
+  awayTeam: string;
+  housePct: number; // % of the pot the house keeps before payouts
+  forwardPct: number; // of each quarter's net payout, forward winner's share
+  payoutSplit: { Q1: number; Q2: number; Q3: number; Q4: number; F: number }; // % of net pool, per quarter
+}
+
+const CONFIG_KEY = (board: Board) => `config:${board}`;
+
+const DEFAULT_SETTINGS: BoardSettings = {
+  homeTeam: "HOME",
+  awayTeam: "AWAY",
+  housePct: 20,
+  forwardPct: 62.5,
+  payoutSplit: { Q1: 25, Q2: 25, Q3: 25, Q4: 25, F: 0 },
+};
+
+export async function getBoardSettings(board: Board): Promise<BoardSettings> {
+  const stored = await kv.get<BoardSettings>(CONFIG_KEY(board));
+  return { ...DEFAULT_SETTINGS, ...stored };
+}
+
+export async function updateBoardSettings(
+  board: Board,
+  patch: Partial<BoardSettings>
+): Promise<BoardSettings> {
+  const current = await getBoardSettings(board);
+  const next: BoardSettings = {
+    ...current,
+    ...patch,
+    payoutSplit: { ...current.payoutSplit, ...(patch.payoutSplit ?? {}) },
+  };
+  await kv.set(CONFIG_KEY(board), next);
+  return next;
+}
+
+// --- Quarters: scores + computed winners, per board ---
+
+export type QuarterKey = "Q1" | "Q2" | "Q3" | "Q4" | "F";
+export const QUARTER_KEYS: QuarterKey[] = ["Q1", "Q2", "Q3", "Q4", "F"];
+
+export interface WinnerResult {
+  forward: { rowIdx: number; colIdx: number; name: string };
+  backward: { rowIdx: number; colIdx: number; name: string };
+}
+
+export interface QuarterState {
+  home: string;
+  away: string;
+  winner: WinnerResult | null;
+}
+
+export type QuartersState = Record<QuarterKey, QuarterState>;
+
+const QUARTERS_KEY = (board: Board) => `quarters:${board}`;
+
+const EMPTY_QUARTERS: QuartersState = {
+  Q1: { home: "", away: "", winner: null },
+  Q2: { home: "", away: "", winner: null },
+  Q3: { home: "", away: "", winner: null },
+  Q4: { home: "", away: "", winner: null },
+  F: { home: "", away: "", winner: null },
+};
+
+export async function getQuarters(board: Board): Promise<QuartersState> {
+  const stored = await kv.get<QuartersState>(QUARTERS_KEY(board));
+  return stored ?? EMPTY_QUARTERS;
+}
+
+export async function updateQuarterScore(
+  board: Board,
+  quarter: QuarterKey,
+  side: "home" | "away",
+  value: string
+): Promise<QuartersState> {
+  const current = await getQuarters(board);
+  const next: QuartersState = {
+    ...current,
+    [quarter]: { ...current[quarter], [side]: value.replace(/[^0-9]/g, "") },
+  };
+  await kv.set(QUARTERS_KEY(board), next);
+  return next;
+}
+
+/**
+ * Computes the forward/backward winning square for a quarter from its
+ * scores and the board's drawn digits, then persists the result. Mirrors
+ * the scoring rule from the original artifact: the home team's last digit
+ * picks the row (forward) or column (backward); the away team's last digit
+ * picks the column (forward) or row (backward).
+ */
+export async function computeAndSaveWinner(
+  board: Board,
+  quarter: QuarterKey
+): Promise<QuartersState> {
+  const [digits, squares, quarters] = await Promise.all([
+    getDigits(board),
+    getAllSquares(board),
+    getQuarters(board),
+  ]);
+
+  const q = quarters[quarter];
+  if (!digits || q.home === "" || q.away === "") {
+    return quarters;
+  }
+
+  const hDigit = Number(q.home.slice(-1));
+  const aDigit = Number(q.away.slice(-1));
+  const fwdRow = digits.rows.indexOf(hDigit);
+  const fwdCol = digits.cols.indexOf(aDigit);
+  const backRow = digits.rows.indexOf(aDigit);
+  const backCol = digits.cols.indexOf(hDigit);
+
+  if (fwdRow === -1 || fwdCol === -1 || backRow === -1 || backCol === -1) {
+    return quarters;
+  }
+
+  const nameAt = (r: number, c: number) => squares[r * 10 + c]?.ownerName || "Unclaimed square";
+
+  const winner: WinnerResult = {
+    forward: { rowIdx: fwdRow, colIdx: fwdCol, name: nameAt(fwdRow, fwdCol) },
+    backward: { rowIdx: backRow, colIdx: backCol, name: nameAt(backRow, backCol) },
+  };
+
+  const next: QuartersState = { ...quarters, [quarter]: { ...q, winner } };
+  await kv.set(QUARTERS_KEY(board), next);
+  return next;
+}
+
+// --- Full board reset (squares, digits, quarters — keeps settings/pin) ---
+
+export async function resetBoard(board: Board): Promise<void> {
+  const keys = Array.from({ length: 100 }, (_, i) => SQUARE_KEY(board, i));
+  await Promise.all(keys.map((k) => kv.del(k)));
+  await kv.del(DIGITS_KEY(board));
+  await kv.del(QUARTERS_KEY(board));
+}
