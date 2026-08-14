@@ -1,0 +1,3255 @@
+diff --git a/.env.example b/.env.example
+new file mode 100644
+index 0000000..7c828b0
+--- /dev/null
++++ b/.env.example
+@@ -0,0 +1,15 @@
++# Whop
++WHOP_API_KEY=
++WHOP_PLAN_ID_SILVER=
++WHOP_PLAN_ID_GOLD=
++WHOP_WEBHOOK_SECRET=
++
++# App
++APP_URL=
++ADMIN_SECRET=
++
++# Vercel KV (auto-populated by Vercel when you connect a KV/Upstash
++# database with the "KV" env var prefix — you shouldn't need to set
++# these by hand in production)
++KV_REST_API_URL=
++KV_REST_API_TOKEN=
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..c51b6e1
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,20 @@
++# dependencies
++node_modules
++
++# next.js build output
++.next
++out
++
++# env files — never commit real secrets
++.env
++.env.local
++.env.*.local
++
++# misc
++.DS_Store
++*.log
++npm-debug.log*
++
++# typescript
++*.tsbuildinfo
++next-env.d.ts
+diff --git a/FOOTBALL SQUARES b/FOOTBALL SQUARES
+deleted file mode 100644
+index 8b13789..0000000
+--- a/FOOTBALL SQUARES	
++++ /dev/null
+@@ -1 +0,0 @@
+-
+diff --git a/README.md b/README.md
+index 5743bc3..8fcf55a 100644
+--- a/README.md
++++ b/README.md
+@@ -1,9 +1,12 @@
+ # SHZ Football Squares — Sweepstakes Build
+ 
+-Paid entries go through Whop Checkout; free entries go through an
+-Alternative Method of Entry (AMOE) form. Both give identical odds, since
+-row/column digits are randomized only once the board fills — nobody's
+-square choice affects their win chance.
++Two independent 10x10 boards — **Silver ($10/square)** and **Gold
++($20/square)** — each with its own squares, its own digit draw, and its
++own entry cutoff. Paid entries go through Whop Checkout; free entries go
++through an Alternative Method of Entry (AMOE) form. Both give identical
++odds on a given board, since row/column digits are randomized only once
++that board's entries close — nobody's square choice affects their win
++chance.
+ 
+ **This is engineering scaffolding, not legal advice.** Have a Texas
+ attorney review the AMOE flow, your official rules page, and prize
+@@ -14,21 +17,26 @@ disclosures before you take real money.
+ Copy these files into `robissic-pixel/SHZ-Football-Squares`, commit, and
+ push to `main`. Vercel will redeploy automatically once it's connected.
+ 
+-## 2. Add a database (Vercel KV)
++## 2. Add a database (Upstash Redis via Vercel Marketplace)
+ 
+-In your Vercel project → **Storage** tab → **Create Database** → choose
+-**KV** (Redis-based). Once created, Vercel auto-adds the `KV_*` env vars
+-to your project — you don't need to copy them manually.
++In your Vercel project → **Storage** tab → **Create Database** →
++**Upstash** → **Upstash for Redis** (not the "Redis"/"Redis Cloud"
++listing — different provider, different client). During setup, set the
++**Custom Environment Variable Prefix** to `KV` so the generated vars match
++what `@vercel/kv` expects (`KV_REST_API_URL`, `KV_REST_API_TOKEN`).
+ 
+ ## 3. Get your Whop credentials
+ 
+ In your Whop dashboard:
+ 1. **Developer** tab → create an API key → copy it into `WHOP_API_KEY`
+-2. Create a **Plan** for a single square ($10, one-time) → copy its ID into `WHOP_PLAN_ID`
++2. Create **two Plans** — one per board:
++   - $10 one-time plan → its ID goes in `WHOP_PLAN_ID_SILVER`
++   - $20 one-time plan → its ID goes in `WHOP_PLAN_ID_GOLD`
+ 3. **Developer → Webhooks** → Create Webhook → point it at
+    `https://<your-app>.vercel.app/api/webhook/whop` → subscribe to
+    `payment.succeeded` and `payment.failed` → copy the secret (after
+-   `whsec_`) into `WHOP_WEBHOOK_SECRET`
++   `whsec_`) into `WHOP_WEBHOOK_SECRET`. One webhook covers both boards —
++   the board is carried through in the checkout metadata.
+ 
+ ## 4. Set remaining env vars in Vercel
+ 
+@@ -39,33 +47,51 @@ Project → **Settings → Environment Variables**:
+ ## 5. Deploy
+ 
+ Redeploy from the Vercel dashboard (or push another commit). Visit your
+-URL — you should see the 10x10 grid.
++URL — you should see a Silver/Gold tab switcher above the 10x10 grid.
+ 
+ ## 6. Test before going live
+ 
+ Whop has a test mode — use test card numbers to confirm a square locks
+-automatically after "payment," and that a webhook retry doesn't
+-double-lock a square (the handler dedupes by `webhook-id`).
++automatically after "payment" **on the correct board**, and that a
++webhook retry doesn't double-lock a square (the handler dedupes by
++`webhook-id`). Also test the free AMOE form on both boards, and confirm
++the same email is rejected on a second attempt for the *same* board but
++accepted once on the *other* board.
+ 
+-## 7. At kickoff
++The site now has a full admin panel built in (click "Admin login" and
++enter your `ADMIN_SECRET`) — from there you can rename teams, set the
++house cut and forward/backward payout split, draw numbers, manually
++assign or release a square (e.g. someone paid you in cash), watch the
++pending-checkout queue, enter quarter scores, and see computed winners.
++The same `ADMIN_SECRET` unlocks admin mode on both boards.
+ 
+-Once the board fills (or your cutoff time hits), call:
++## 7. At kickoff — randomize each board separately
++
++Each board is closed independently by calling this once per board:
+ 
+ ```bash
+ curl -X POST https://<your-app>.vercel.app/api/admin/randomize \
+-  -H "x-admin-secret: <your ADMIN_SECRET>"
++  -H "x-admin-secret: <your ADMIN_SECRET>" \
++  -H "Content-Type: application/json" \
++  -d '{"board": "silver"}'
++
++curl -X POST https://<your-app>.vercel.app/api/admin/randomize \
++  -H "x-admin-secret: <your ADMIN_SECRET>" \
++  -H "Content-Type: application/json" \
++  -d '{"board": "gold"}'
+ ```
+ 
+-This randomly assigns 0-9 to each row and column, one time only. After
+-this, the board should be taken out of "open for entry" mode — this
+-scaffold doesn't auto-close entries, so add a simple flag check in
+-`app/page.tsx` / `app/api/checkout/route.ts` for your actual cutoff time.
++This randomly assigns 0-9 to each row and column for that board, one time
++only. As soon as this succeeds for a board, both the paid checkout and
++free AMOE routes automatically start rejecting new entries for that
++specific board — the other board is unaffected until you randomize it too.
+ 
+ ## What still needs a lawyer's eyes
+ 
+ - **Official Rules page** — required for sweepstakes: entry period, odds
+   disclosure, eligibility (age/state restrictions), how AMOE works, prize
+-  value, void-where-prohibited language
++  value, void-where-prohibited language. Consider whether the two boards
++  need to be disclosed as separate sweepstakes/entry pools.
+ - Whether Texas requires AMOE to include a **mail-in** option, not just a
+   web form
+ - Prize payout mechanics and any 1099 / tax reporting for winners
+diff --git a/app/api/admin/config/route.ts b/app/api/admin/config/route.ts
+new file mode 100644
+index 0000000..5cffa08
+--- /dev/null
++++ b/app/api/admin/config/route.ts
+@@ -0,0 +1,19 @@
++import { NextRequest, NextResponse } from "next/server";
++import { updateBoardSettings, isBoard } from "../../../../lib/kv";
++import { requireEnv } from "../../../../lib/env";
++
++export async function POST(req: NextRequest) {
++  const ADMIN_SECRET = requireEnv("ADMIN_SECRET");
++  const auth = req.headers.get("x-admin-secret");
++  if (auth !== ADMIN_SECRET) {
++    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
++  }
++
++  const { board, ...patch } = await req.json().catch(() => ({}));
++  if (!isBoard(board)) {
++    return NextResponse.json({ error: "Invalid board" }, { status: 400 });
++  }
++
++  const settings = await updateBoardSettings(board, patch);
++  return NextResponse.json({ board, settings });
++}
+diff --git a/app/api/admin/randomize/route.ts b/app/api/admin/randomize/route.ts
+index a1eb408..417f239 100644
+--- a/app/api/admin/randomize/route.ts
++++ b/app/api/admin/randomize/route.ts
+@@ -1,22 +1,32 @@
+ import { NextRequest, NextResponse } from "next/server";
+-import { randomizeDigits, getDigits } from "../../../../lib/kv";
+-
+-const ADMIN_SECRET = process.env.ADMIN_SECRET!;
++import { randomizeDigits, getDigits, isBoard } from "../../../../lib/kv";
++import { requireEnv } from "../../../../lib/env";
+ 
+ export async function POST(req: NextRequest) {
++  const ADMIN_SECRET = requireEnv("ADMIN_SECRET");
+   const auth = req.headers.get("x-admin-secret");
+   if (auth !== ADMIN_SECRET) {
+     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+   }
+ 
+-  const existing = await getDigits();
++  const { board } = await req.json().catch(() => ({}));
++  if (!isBoard(board)) {
++    return NextResponse.json(
++      { error: "Invalid board. Pass { \"board\": \"silver\" } or { \"board\": \"gold\" } in the request body." },
++      { status: 400 }
++    );
++  }
++
++  const existing = await getDigits(board);
+   if (existing) {
+     return NextResponse.json(
+-      { error: "Digits already randomized. Delete board:digits in KV to redo (testing only)." },
++      {
++        error: `Digits already randomized for the ${board} board. Delete board:${board}:digits in KV to redo (testing only).`,
++      },
+       { status: 409 }
+     );
+   }
+ 
+-  const digits = await randomizeDigits();
+-  return NextResponse.json(digits);
++  const digits = await randomizeDigits(board);
++  return NextResponse.json({ board, ...digits });
+ }
+diff --git a/app/api/admin/reset/route.ts b/app/api/admin/reset/route.ts
+new file mode 100644
+index 0000000..8d5cc00
+--- /dev/null
++++ b/app/api/admin/reset/route.ts
+@@ -0,0 +1,19 @@
++import { NextRequest, NextResponse } from "next/server";
++import { resetBoard, isBoard } from "../../../../lib/kv";
++import { requireEnv } from "../../../../lib/env";
++
++export async function POST(req: NextRequest) {
++  const ADMIN_SECRET = requireEnv("ADMIN_SECRET");
++  const auth = req.headers.get("x-admin-secret");
++  if (auth !== ADMIN_SECRET) {
++    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
++  }
++
++  const { board } = await req.json().catch(() => ({}));
++  if (!isBoard(board)) {
++    return NextResponse.json({ error: "Invalid board" }, { status: 400 });
++  }
++
++  await resetBoard(board);
++  return NextResponse.json({ ok: true });
++}
+diff --git a/app/api/admin/score/route.ts b/app/api/admin/score/route.ts
+new file mode 100644
+index 0000000..63a72a5
+--- /dev/null
++++ b/app/api/admin/score/route.ts
+@@ -0,0 +1,29 @@
++import { NextRequest, NextResponse } from "next/server";
++import { updateQuarterScore, computeAndSaveWinner, isBoard, QUARTER_KEYS } from "../../../../lib/kv";
++import { requireEnv } from "../../../../lib/env";
++
++export async function POST(req: NextRequest) {
++  const ADMIN_SECRET = requireEnv("ADMIN_SECRET");
++  const auth = req.headers.get("x-admin-secret");
++  if (auth !== ADMIN_SECRET) {
++    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
++  }
++
++  const { board, quarter, side, value, computeWinner } = await req.json().catch(() => ({}));
++
++  if (!isBoard(board) || !QUARTER_KEYS.includes(quarter)) {
++    return NextResponse.json({ error: "Invalid board or quarter" }, { status: 400 });
++  }
++
++  if (computeWinner) {
++    const quarters = await computeAndSaveWinner(board, quarter);
++    return NextResponse.json({ board, quarters });
++  }
++
++  if (side !== "home" && side !== "away") {
++    return NextResponse.json({ error: "side must be 'home' or 'away'" }, { status: 400 });
++  }
++
++  const quarters = await updateQuarterScore(board, quarter, side, String(value ?? ""));
++  return NextResponse.json({ board, quarters });
++}
+diff --git a/app/api/admin/square/route.ts b/app/api/admin/square/route.ts
+new file mode 100644
+index 0000000..8e89d4d
+--- /dev/null
++++ b/app/api/admin/square/route.ts
+@@ -0,0 +1,38 @@
++import { NextRequest, NextResponse } from "next/server";
++import { adminAssignSquare, adminReleaseSquare, isBoard } from "../../../../lib/kv";
++import { requireEnv } from "../../../../lib/env";
++
++/**
++ * Admin direct control over a single square — assign it to someone who
++ * paid outside Whop (cash, Venmo, etc.), or force-release a stuck/expired
++ * hold or a mistaken assignment back to open.
++ */
++export async function POST(req: NextRequest) {
++  const ADMIN_SECRET = requireEnv("ADMIN_SECRET");
++  const auth = req.headers.get("x-admin-secret");
++  if (auth !== ADMIN_SECRET) {
++    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
++  }
++
++  const { board, squareId, action, name } = await req.json().catch(() => ({}));
++  const id = Number(squareId);
++
++  if (!isBoard(board) || !Number.isInteger(id) || id < 0 || id > 99) {
++    return NextResponse.json({ error: "Invalid board or squareId" }, { status: 400 });
++  }
++
++  if (action === "assign") {
++    if (!name || !String(name).trim()) {
++      return NextResponse.json({ error: "name is required to assign a square" }, { status: 400 });
++    }
++    await adminAssignSquare(board, id, String(name).trim());
++    return NextResponse.json({ ok: true });
++  }
++
++  if (action === "release") {
++    await adminReleaseSquare(board, id);
++    return NextResponse.json({ ok: true });
++  }
++
++  return NextResponse.json({ error: "action must be 'assign' or 'release'" }, { status: 400 });
++}
+diff --git a/app/api/admin/verify/route.ts b/app/api/admin/verify/route.ts
+new file mode 100644
+index 0000000..5fe5d5e
+--- /dev/null
++++ b/app/api/admin/verify/route.ts
+@@ -0,0 +1,17 @@
++import { NextRequest, NextResponse } from "next/server";
++import { requireEnv } from "../../../../lib/env";
++
++/**
++ * Lightweight check for whether a given secret matches ADMIN_SECRET,
++ * used by the "Admin login" screen so the UI only unlocks admin controls
++ * after the server actually confirms the secret — instead of unlocking
++ * optimistically and only failing later on the first real admin action.
++ */
++export async function POST(req: NextRequest) {
++  const ADMIN_SECRET = requireEnv("ADMIN_SECRET");
++  const auth = req.headers.get("x-admin-secret");
++  if (auth !== ADMIN_SECRET) {
++    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
++  }
++  return NextResponse.json({ ok: true });
++}
+diff --git a/app/api/amoe/route.ts b/app/api/amoe/route.ts
+index f58e02f..7fbb2b0 100644
+--- a/app/api/amoe/route.ts
++++ b/app/api/amoe/route.ts
+@@ -1,5 +1,6 @@
+ import { NextRequest, NextResponse } from "next/server";
+-import { lockSquare, getAllSquares } from "../../../lib/kv";
++import { lockSquare, getAllSquares, entriesAreOpen, claimAmoeEmail, isBoard } from "../../../lib/kv";
++import { kv } from "@vercel/kv";
+ 
+ /**
+  * Free Alternative Method of Entry.
+@@ -14,38 +15,55 @@ import { lockSquare, getAllSquares } from "../../../lib/kv";
+  * odds, no purchase" mechanics but does not by itself guarantee compliance.
+  */
+ export async function POST(req: NextRequest) {
+-  const { name, email, mailingAddress } = await req.json();
++  const { board, name, email, mailingAddress } = await req.json();
+ 
+-  if (!name || !email || !mailingAddress) {
++  if (!isBoard(board) || !name || !email || !mailingAddress) {
+     return NextResponse.json(
+-      { error: "Name, email, and mailing address are required." },
++      { error: "Board, name, email, and mailing address are required." },
+       { status: 400 }
+     );
+   }
+ 
+-  // Auto-assign a random open square so free entrants can't cherry-pick
+-  // (paid entrants can't meaningfully cherry-pick either, since digits are
+-  // randomized after the board fills — but this keeps the entry flow itself
+-  // free of any appearance of unequal treatment).
+-  const all = await getAllSquares();
++  // Block new entries once the digits have been drawn for this board.
++  if (!(await entriesAreOpen(board))) {
++    return NextResponse.json(
++      { error: "Entries are closed for this board — numbers have already been drawn." },
++      { status: 409 }
++    );
++  }
++
++  // One free entry per email address per board. Without this, the same
++  // person (or a script) could submit repeatedly and claim every open
++  // square for free, which both defeats the paid revenue model and isn't
++  // really "one entry" in the spirit of an AMOE. A person can still enter
++  // both boards once each, since silver and gold are independent pools.
++  const emailAvailable = await claimAmoeEmail(board, email);
++  if (!emailAvailable) {
++    return NextResponse.json(
++      { error: "This email has already been used for a free entry on this board." },
++      { status: 409 }
++    );
++  }
++
++  // Auto-assign a random open square so free entrants can't cherry-pick.
++  const all = await getAllSquares(board);
+   const open = all.filter((s) => s.status === "open");
+ 
+   if (open.length === 0) {
+-    return NextResponse.json({ error: "Board is full." }, { status: 409 });
++    return NextResponse.json({ error: "This board is full." }, { status: 409 });
+   }
+ 
+   const chosen = open[Math.floor(Math.random() * open.length)];
+-  await lockSquare(chosen.id, "free", name, email);
++  await lockSquare(board, chosen.id, "free", name, email);
+ 
+   // Persist the mailing address + AMOE record separately for compliance
+   // record-keeping (not stored on the square itself).
+-  const { kv } = await import("@vercel/kv");
+-  await kv.set(`amoe:${chosen.id}`, {
++  await kv.set(`amoe:${board}:${chosen.id}`, {
+     name,
+     email,
+     mailingAddress,
+     submittedAt: new Date().toISOString(),
+   });
+ 
+-  return NextResponse.json({ squareId: chosen.id });
++  return NextResponse.json({ board, squareId: chosen.id });
+ }
+diff --git a/app/api/checkout/route.ts b/app/api/checkout/route.ts
+index 1ba861d..1df75d1 100644
+--- a/app/api/checkout/route.ts
++++ b/app/api/checkout/route.ts
+@@ -1,14 +1,12 @@
+ import { NextRequest, NextResponse } from "next/server";
+-import { holdSquare, releaseSquare } from "../../../lib/kv";
+-
+-const WHOP_API_KEY = process.env.WHOP_API_KEY!;
+-const WHOP_PLAN_ID = process.env.WHOP_PLAN_ID!; // the $10 plan for one square
+-const APP_URL = process.env.APP_URL!; // e.g. https://shz-football-squares.vercel.app
++import { holdSquare, releaseSquare, entriesAreOpen, checkRateLimit, isBoard, BOARD_CONFIG } from "../../../lib/kv";
++import { requireEnv } from "../../../lib/env";
+ 
+ export async function POST(req: NextRequest) {
+-  const { squareId, name, email } = await req.json();
++  const { board, squareId, name, email } = await req.json();
+ 
+   if (
++    !isBoard(board) ||
+     typeof squareId !== "number" ||
+     squareId < 0 ||
+     squareId > 99 ||
+@@ -18,8 +16,31 @@ export async function POST(req: NextRequest) {
+     return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+   }
+ 
++  // Block new entries once the digits have been drawn — an entry after
++  // that point no longer has the same odds as everyone who entered before
++  // the draw, which undermines the "equal odds" premise the free AMOE
++  // path depends on. Each board closes independently.
++  if (!(await entriesAreOpen(board))) {
++    return NextResponse.json(
++      { error: "Entries are closed for this board — numbers have already been drawn." },
++      { status: 409 }
++    );
++  }
++
++  // Rate-limit per email+board so a bad actor can't repeatedly hold-and-
++  // abandon squares (each hold blocks that square for up to 10 minutes) to
++  // grief real buyers out of the board.
++  const rateLimitKey = `${board}:${String(email).toLowerCase().trim()}`;
++  const underLimit = await checkRateLimit(rateLimitKey, 5, 10 * 60);
++  if (!underLimit) {
++    return NextResponse.json(
++      { error: "Too many checkout attempts. Please wait a few minutes and try again." },
++      { status: 429 }
++    );
++  }
++
+   // Temporarily hold the square so nobody else can grab it mid-checkout.
+-  const held = await holdSquare(squareId, name, email);
++  const held = await holdSquare(board, squareId, name, email);
+   if (!held) {
+     return NextResponse.json(
+       { error: "That square is no longer available." },
+@@ -28,6 +49,10 @@ export async function POST(req: NextRequest) {
+   }
+ 
+   try {
++    const WHOP_API_KEY = requireEnv("WHOP_API_KEY");
++    const WHOP_PLAN_ID = requireEnv(BOARD_CONFIG[board].planEnvVar); // WHOP_PLAN_ID_SILVER or WHOP_PLAN_ID_GOLD
++    const APP_URL = requireEnv("APP_URL"); // e.g. https://shz-football-squares-yllj.vercel.app
++
+     const res = await fetch("https://api.whop.com/api/v2/checkout_sessions", {
+       method: "POST",
+       headers: {
+@@ -36,8 +61,9 @@ export async function POST(req: NextRequest) {
+       },
+       body: JSON.stringify({
+         plan_id: WHOP_PLAN_ID,
+-        redirect_url: `${APP_URL}/checkout-complete?square=${squareId}`,
++        redirect_url: `${APP_URL}/checkout-complete?board=${board}&square=${squareId}`,
+         metadata: {
++          board,
+           square_id: String(squareId),
+           buyer_name: name,
+           buyer_email: email,
+@@ -47,7 +73,7 @@ export async function POST(req: NextRequest) {
+     });
+ 
+     if (!res.ok) {
+-      await releaseSquare(squareId);
++      await releaseSquare(board, squareId);
+       const errText = await res.text();
+       return NextResponse.json(
+         { error: `Whop checkout error: ${errText}` },
+@@ -58,10 +84,8 @@ export async function POST(req: NextRequest) {
+     const session = await res.json();
+     return NextResponse.json({ purchaseUrl: session.purchase_url });
+   } catch (err) {
+-    await releaseSquare(squareId);
+-    return NextResponse.json(
+-      { error: "Failed to create checkout session" },
+-      { status: 500 }
+-    );
++    await releaseSquare(board, squareId);
++    const message = err instanceof Error ? err.message : "Failed to create checkout session";
++    return NextResponse.json({ error: message }, { status: 500 });
+   }
+ }
+diff --git a/app/api/squares/route.ts b/app/api/squares/route.ts
+index 3bdee90..9b5d6e2 100644
+--- a/app/api/squares/route.ts
++++ b/app/api/squares/route.ts
+@@ -1,16 +1,39 @@
+-import { NextResponse } from "next/server";
+-import { getAllSquares, getDigits } from "../../../lib/kv";
++import { NextRequest, NextResponse } from "next/server";
++import { getAllSquares, getDigits, getBoardSettings, getQuarters, isBoard } from "../../../lib/kv";
+ 
+-export async function GET() {
+-  const squares = await getAllSquares();
+-  const digits = await getDigits();
++// This route reads live game state from KV on every request. Without this,
++// Next.js's App Router will try to statically generate it at build time
++// (baking in whatever the board looked like during the build, and never
++// updating again) since a naive handler would take no request-derived input.
++export const dynamic = "force-dynamic";
++
++export async function GET(req: NextRequest) {
++  const boardParam = req.nextUrl.searchParams.get("board") ?? "silver";
++  if (!isBoard(boardParam)) {
++    return NextResponse.json({ error: "Invalid board. Use ?board=silver or ?board=gold." }, { status: 400 });
++  }
++
++  const [squares, digits, settings, quarters] = await Promise.all([
++    getAllSquares(boardParam),
++    getDigits(boardParam),
++    getBoardSettings(boardParam),
++    getQuarters(boardParam),
++  ]);
++
++  // Admins (identified by the same shared secret used for other admin
++  // routes) can see who's holding a pending square and when that hold
++  // expires, so they can spot and release stuck checkouts. Everyone else
++  // only ever sees owner names for squares that are fully locked in — a
++  // pending buyer's name/email never leaks to other players.
++  const isAdminRequest =
++    !!process.env.ADMIN_SECRET && req.headers.get("x-admin-secret") === process.env.ADMIN_SECRET;
+ 
+-  // Never leak buyer emails to the public board.
+   const publicSquares = squares.map((s) => ({
+     id: s.id,
+     status: s.status,
+-    ownerName: s.status === "locked" ? s.ownerName : undefined,
++    ownerName: s.status === "locked" || (isAdminRequest && s.status === "pending") ? s.ownerName : undefined,
++    pendingExpiresAt: isAdminRequest ? s.pendingExpiresAt : undefined,
+   }));
+ 
+-  return NextResponse.json({ squares: publicSquares, digits });
++  return NextResponse.json({ board: boardParam, squares: publicSquares, digits, settings, quarters });
+ }
+diff --git a/app/api/webhook/whop/route.ts b/app/api/webhook/whop/route.ts
+index c348575..f41dbc8 100644
+--- a/app/api/webhook/whop/route.ts
++++ b/app/api/webhook/whop/route.ts
+@@ -1,9 +1,8 @@
+ import { NextRequest, NextResponse } from "next/server";
+ import crypto from "crypto";
+ import { kv } from "@vercel/kv";
+-import { lockSquare, releaseSquare } from "../../../../lib/kv";
+-
+-const WEBHOOK_SECRET = process.env.WHOP_WEBHOOK_SECRET!; // the part after "whsec_"
++import { lockSquare, releaseSquare, isBoard } from "../../../../lib/kv";
++import { requireEnv } from "../../../../lib/env";
+ 
+ // Whop follows the Standard Webhooks spec:
+ // headers: webhook-id, webhook-timestamp, webhook-signature ("v1,<base64 hmac>")
+@@ -14,17 +13,23 @@ function verifySignature(
+   timestamp: string,
+   signatureHeader: string
+ ): boolean {
+-  const secretKey = Buffer.from(WEBHOOK_SECRET, "base64");
++  const secretKey = Buffer.from(requireEnv("WHOP_WEBHOOK_SECRET"), "base64");
+   const signedContent = `${id}.${timestamp}.${rawBody}`;
+   const expected = crypto
+     .createHmac("sha256", secretKey)
+     .update(signedContent)
+     .digest("base64");
++  const expectedBuf = Buffer.from(expected);
+ 
+-  const candidates = signatureHeader.split(" ").map((s) => s.split(",")[1]);
+-  return candidates.some((c) =>
+-    crypto.timingSafeEqual(Buffer.from(c ?? ""), Buffer.from(expected))
+-  );
++  const candidates = signatureHeader.split(" ").map((s) => s.split(",")[1] ?? "");
++  return candidates.some((c) => {
++    // timingSafeEqual throws (instead of returning false) if the two
++    // buffers aren't the same byte length, so a malformed/short header
++    // would otherwise crash this route with an unhandled 500 instead of
++    // failing closed with a clean 401.
++    const candidateBuf = Buffer.from(c);
++    return candidateBuf.length === expectedBuf.length && crypto.timingSafeEqual(candidateBuf, expectedBuf);
++  });
+ }
+ 
+ export async function POST(req: NextRequest) {
+@@ -43,7 +48,13 @@ export async function POST(req: NextRequest) {
+     return NextResponse.json({ error: "Timestamp too old" }, { status: 400 });
+   }
+ 
+-  if (!verifySignature(rawBody, id, timestamp, signature)) {
++  let signatureValid: boolean;
++  try {
++    signatureValid = verifySignature(rawBody, id, timestamp, signature);
++  } catch (err) {
++    return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
++  }
++  if (!signatureValid) {
+     return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
+   }
+ 
+@@ -54,22 +65,27 @@ export async function POST(req: NextRequest) {
+     return NextResponse.json({ ok: true, duplicate: true });
+   }
+ 
+-  const event = JSON.parse(rawBody);
++  let event: any;
++  try {
++    event = JSON.parse(rawBody);
++  } catch (err) {
++    return NextResponse.json({ error: "Malformed JSON body" }, { status: 400 });
++  }
+ 
+-  if (event.type === "payment.succeeded") {
+-    const { square_id, buyer_name, buyer_email } = event.data.metadata ?? {};
++  if (event?.type === "payment.succeeded") {
++    const { board, square_id, buyer_name, buyer_email } = event.data?.metadata ?? {};
+     const squareId = Number(square_id);
+ 
+-    if (Number.isInteger(squareId) && squareId >= 0 && squareId <= 99) {
+-      await lockSquare(squareId, "paid", buyer_name, buyer_email, event.data.id);
++    if (isBoard(board) && Number.isInteger(squareId) && squareId >= 0 && squareId <= 99) {
++      await lockSquare(board, squareId, "paid", buyer_name, buyer_email, event.data?.id);
+     }
+   }
+ 
+-  if (event.type === "payment.failed") {
+-    const { square_id } = event.data.metadata ?? {};
++  if (event?.type === "payment.failed") {
++    const { board, square_id } = event.data?.metadata ?? {};
+     const squareId = Number(square_id);
+-    if (Number.isInteger(squareId)) {
+-      await releaseSquare(squareId);
++    if (isBoard(board) && Number.isInteger(squareId)) {
++      await releaseSquare(board, squareId);
+     }
+   }
+ 
+diff --git a/app/checkout-complete/page.tsx b/app/checkout-complete/page.tsx
+index de299d7..ea6d6e3 100644
+--- a/app/checkout-complete/page.tsx
++++ b/app/checkout-complete/page.tsx
+@@ -1,14 +1,15 @@
+ export default function CheckoutComplete({
+   searchParams,
+ }: {
+-  searchParams: { square?: string; status?: string };
++  searchParams: { board?: string; square?: string; status?: string };
+ }) {
+   return (
+     <main style={{ maxWidth: 480, margin: "80px auto", textAlign: "center", fontFamily: "system-ui" }}>
+       <h1>Thanks!</h1>
+       <p>
+-        Your payment for square #{searchParams.square} is being confirmed.
+-        This can take a few seconds — refresh the board to see it locked in.
++        Your payment for square #{searchParams.square} on the{" "}
++        {searchParams.board ?? ""} board is being confirmed. This can take a
++        few seconds — refresh the board to see it locked in.
+       </p>
+       <a href="/">Back to the board</a>
+     </main>
+diff --git a/app/page.tsx b/app/page.tsx
+index 5b74bfc..a213410 100644
+--- a/app/page.tsx
++++ b/app/page.tsx
+@@ -1,147 +1,1245 @@
+ "use client";
+ 
+-import { useEffect, useState } from "react";
++import { useCallback, useEffect, useMemo, useState } from "react";
++
++// ============================================================================
++// SWINEHEADZ SQUARES — two independent boards (Silver $10 / Gold $20)
++// Talks to the real backend (Redis-backed API routes + Whop checkout),
++// but keeps the visual design and admin tooling from the original mockup.
++// ============================================================================
++
++type BoardKey = "silver" | "gold";
++type QuarterKey = "Q1" | "Q2" | "Q3" | "Q4" | "F";
++const QUARTER_KEYS: QuarterKey[] = ["Q1", "Q2", "Q3", "Q4", "F"];
++const GRID = 10;
++const POLL_MS = 5000;
+ 
+ interface Square {
+   id: number;
+   status: "open" | "pending" | "locked";
+   ownerName?: string;
++  pendingExpiresAt?: string;
++}
++interface Digits {
++  rows: number[];
++  cols: number[];
++}
++interface Settings {
++  homeTeam: string;
++  awayTeam: string;
++  housePct: number;
++  forwardPct: number;
++  payoutSplit: Record<QuarterKey, number>;
++}
++interface WinnerResult {
++  forward: { rowIdx: number; colIdx: number; name: string };
++  backward: { rowIdx: number; colIdx: number; name: string };
++}
++interface QuarterState {
++  home: string;
++  away: string;
++  winner: WinnerResult | null;
++}
++type Quarters = Record<QuarterKey, QuarterState>;
++
++const BOARD_META: Record<BoardKey, { label: string; price: number }> = {
++  silver: { label: "Silver Board", price: 10 },
++  gold: { label: "Gold Board", price: 20 },
++};
++
++const THEMES = {
++  silver: {
++    bgDark: "#191C20",
++    bg: "#2A2E34",
++    accent: "#C6CCD4",
++    accentSoft: "rgba(198,204,212,0.18)",
++    accentSoftBorder: "rgba(198,204,212,0.5)",
++    accentSofter: "rgba(198,204,212,0.05)",
++    panel: "#ECEDEF",
++    panelInput: "#FBFBFC",
++    panelBorder: "#CDD1D7",
++    muted: "#5C6169",
++    chalk: "#E4E7EA",
++    chalkDim: "#A9B2BC",
++    danger: "#B23A2E",
++    ink: "#15171A",
++    pendingAccent: "#7A8797",
++    pendingSoft: "rgba(122,135,151,0.18)",
++    mineSoft: "rgba(198,204,212,0.42)",
++    winnerForwardText: "#fff",
++    winnerForwardBorder: "#FFD8CF",
++    winnerBackwardText: "#15171A",
++    winnerBackwardBorder: "#F4F6F8",
++  },
++  gold: {
++    bgDark: "#0B211B",
++    bg: "#12332A",
++    accent: "#D9A63E",
++    accentSoft: "rgba(217,166,62,0.18)",
++    accentSoftBorder: "rgba(217,166,62,0.5)",
++    accentSofter: "rgba(217,166,62,0.04)",
++    panel: "#F3EEDF",
++    panelInput: "#FFFDF7",
++    panelBorder: "#D8CFB4",
++    muted: "#6B6350",
++    chalk: "#EFE7D2",
++    chalkDim: "#B9C9BE",
++    danger: "#B23A2E",
++    ink: "#141310",
++    pendingAccent: "#C97A2B",
++    pendingSoft: "rgba(201,122,43,0.16)",
++    mineSoft: "rgba(217,166,62,0.42)",
++    winnerForwardText: "#fff",
++    winnerForwardBorder: "#FFD8CF",
++    winnerBackwardText: "#141310",
++    winnerBackwardBorder: "#FFE9BC",
++  },
++} as const;
++type Theme = (typeof THEMES)[BoardKey];
++
++function pageTurfBackground(theme: Theme) {
++  return `
++    repeating-linear-gradient(90deg, rgba(255,255,255,0.035) 0px, rgba(255,255,255,0.035) 2px, transparent 2px, transparent 70px),
++    repeating-linear-gradient(180deg, rgba(255,255,255,0.045) 0px, rgba(255,255,255,0.045) 5px, transparent 5px, transparent 130px),
++    radial-gradient(ellipse 900px 500px at 50% 0%, ${theme.accentSofter} 0%, transparent 65%),
++    linear-gradient(180deg, #1C4328 0%, #143723 40%, #0F2C1B 75%, #0A2014 100%)
++  `;
+ }
+ 
+-export default function BoardPage() {
++function formatMoney(n: number) {
++  return "$" + Number(n || 0).toFixed(2).replace(/\.00$/, "");
++}
++function qLabel(k: QuarterKey) {
++  return k === "F" ? "Final" : k;
++}
++function initials(name: string) {
++  return name.trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
++}
++function timeUntil(iso?: string) {
++  if (!iso) return "";
++  const ms = new Date(iso).getTime() - Date.now();
++  if (ms <= 0) return "expiring";
++  const mins = Math.ceil(ms / 60000);
++  return `${mins} min left`;
++}
++function getWinnerHighlight(quarters: Quarters, r: number, c: number): "forward" | "backward" | null {
++  for (const qKey of QUARTER_KEYS) {
++    const w = quarters[qKey]?.winner;
++    if (!w) continue;
++    if (w.forward.rowIdx === r && w.forward.colIdx === c) return "forward";
++    if (w.backward.rowIdx === r && w.backward.colIdx === c) return "backward";
++  }
++  return null;
++}
++
++// ============================================================================
++// HogPlayer — decorative flat-illustration hog football player.
++// ============================================================================
++
++function hogCornerStyle(corner: "bl" | "tr" | "br"): React.CSSProperties {
++  const base: React.CSSProperties = {
++    position: "absolute",
++    width: 92,
++    height: 115,
++    opacity: 0.3,
++    pointerEvents: "none",
++    zIndex: 0,
++    filter: "drop-shadow(0 6px 10px rgba(0,0,0,0.35))",
++  };
++  switch (corner) {
++    case "bl":
++      return { ...base, left: -8, bottom: -4 };
++    case "tr":
++      return { ...base, right: -4, top: 2, width: 84, height: 104, transform: "scaleX(-1)" };
++    case "br":
++      return { ...base, right: 6, bottom: -6, width: 76, height: 96 };
++  }
++}
++
++function HogPlayer({ theme, corner, pose }: { theme: Theme; corner: "bl" | "tr" | "br"; pose: "run" | "block" | "reach" }) {
++  const poses = {
++    run: { legBack: -20, legFront: 24, armBack: -28, armFront: 34, tilt: -8 },
++    block: { legBack: -32, legFront: 32, armBack: -42, armFront: 42, tilt: 0 },
++    reach: { legBack: -10, legFront: 14, armBack: 8, armFront: 62, tilt: -14 },
++  };
++  const d = poses[pose];
++  const jersey = theme.accent;
++  const ink = theme.ink;
++  const snout = "#C98A5E";
++  const ball = "#7A4A25";
++  const tusk = "#F4F0E6";
++
++  return (
++    <div style={hogCornerStyle(corner)} aria-hidden="true">
++      <svg viewBox="0 0 120 150" width="100%" height="100%">
++        <g transform={`rotate(${d.tilt} 60 80)`}>
++          <rect x="52" y="95" width="14" height="40" rx="6" fill={ink} transform={`rotate(${d.legBack} 59 95)`} />
++          <rect x="54" y="95" width="14" height="40" rx="6" fill={ink} transform={`rotate(${d.legFront} 61 95)`} />
++          <rect x="38" y="55" width="44" height="46" rx="14" fill={jersey} stroke={ink} strokeWidth="3" />
++          <rect x="30" y="58" width="12" height="34" rx="6" fill={jersey} stroke={ink} strokeWidth="2" transform={`rotate(${d.armBack} 36 60)`} />
++          <rect x="78" y="58" width="12" height="34" rx="6" fill={jersey} stroke={ink} strokeWidth="2" transform={`rotate(${d.armFront} 84 60)`} />
++          <ellipse
++            cx="92"
++            cy={pose === "reach" ? 20 : 88}
++            rx="9"
++            ry="6"
++            fill={ball}
++            stroke={ink}
++            strokeWidth="1.5"
++            transform={pose === "reach" ? "rotate(-30 92 20)" : "rotate(20 92 88)"}
++          />
++          <circle cx="60" cy="38" r="22" fill={ink} />
++          <circle cx="60" cy="40" r="15" fill={jersey} opacity="0.15" />
++          <ellipse cx="60" cy="46" rx="10" ry="7" fill={snout} stroke={ink} strokeWidth="2" />
++          <circle cx="56" cy="46" r="1.6" fill={ink} />
++          <circle cx="64" cy="46" r="1.6" fill={ink} />
++          <path d="M50 50 L46 56 L52 54 Z" fill={tusk} />
++          <path d="M70 50 L74 56 L68 54 Z" fill={tusk} />
++          <path d="M42 24 L34 14 L46 20 Z" fill={ink} />
++          <path d="M78 24 L86 14 L74 20 Z" fill={ink} />
++          <path d="M48 42 Q60 52 72 42" stroke={theme.danger} strokeWidth="3" fill="none" />
++        </g>
++      </svg>
++    </div>
++  );
++}
++
++function sleep(ms: number) {
++  return new Promise((res) => setTimeout(res, ms));
++}
++function shuffledDigits() {
++  const arr = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
++  for (let i = arr.length - 1; i > 0; i--) {
++    const j = Math.floor(Math.random() * (i + 1));
++    [arr[i], arr[j]] = [arr[j], arr[i]];
++  }
++  return arr;
++}
++
++// ============================================================================
++// BoardPanel — everything for one board (silver or gold)
++// ============================================================================
++
++function BoardPanel({ boardKey, theme }: { boardKey: BoardKey; theme: Theme }) {
++  const styles = useMemo(() => getStyles(theme), [theme]);
++  const meta = BOARD_META[boardKey];
++
+   const [squares, setSquares] = useState<Square[]>([]);
+-  const [digits, setDigits] = useState<{ rows: number[]; cols: number[] } | null>(null);
++  const [digits, setDigits] = useState<Digits | null>(null);
++  const [settings, setSettings] = useState<Settings | null>(null);
++  const [quarters, setQuarters] = useState<Quarters | null>(null);
++  const [loading, setLoading] = useState(true);
++
++  const [myName, setMyName] = useState("");
++  const [myEmail, setMyEmail] = useState("");
++  const [myAddress, setMyAddress] = useState("");
+   const [selected, setSelected] = useState<number | null>(null);
+   const [mode, setMode] = useState<"paid" | "free" | null>(null);
+-  const [name, setName] = useState("");
+-  const [email, setEmail] = useState("");
+-  const [address, setAddress] = useState("");
+   const [busy, setBusy] = useState(false);
+   const [error, setError] = useState<string | null>(null);
++  const [toast, setToast] = useState("");
++  const [revealCell, setRevealCell] = useState<string | null>(null);
+ 
+-  const load = () =>
+-    fetch("/api/squares")
+-      .then((r) => r.json())
+-      .then((d) => {
+-        setSquares(d.squares);
+-        setDigits(d.digits);
+-      });
++  const [isAdmin, setIsAdmin] = useState(false);
++  const [showPinModal, setShowPinModal] = useState(false);
++  const [secretInput, setSecretInput] = useState("");
++  const [secretError, setSecretError] = useState("");
++  const [adminSecret, setAdminSecret] = useState("");
++
++  const [teamDraft, setTeamDraft] = useState({ home: "", away: "" });
++  const [flipping, setFlipping] = useState(false);
++  const [flipRow, setFlipRow] = useState<number[] | null>(null);
++  const [flipCol, setFlipCol] = useState<number[] | null>(null);
++  const [confirmingRedraw, setConfirmingRedraw] = useState(false);
++  const [confirmingReset, setConfirmingReset] = useState(false);
++
++  const showToast = (msg: string) => {
++    setToast(msg);
++    setTimeout(() => setToast(""), 2800);
++  };
++
++  const load = useCallback(
++    async (silent?: boolean) => {
++      try {
++        if (!silent) setLoading(true);
++        const headers: HeadersInit = adminSecret ? { "x-admin-secret": adminSecret } : {};
++        const res = await fetch(`/api/squares?board=${boardKey}`, { headers });
++        const data = await res.json();
++        setSquares(data.squares);
++        setDigits(data.digits);
++        setSettings(data.settings);
++        setQuarters(data.quarters);
++      } catch {
++        // transient — next poll will retry
++      } finally {
++        if (!silent) setLoading(false);
++      }
++    },
++    [boardKey, adminSecret]
++  );
+ 
+   useEffect(() => {
++    setSelected(null);
++    setMode(null);
++    setError(null);
+     load();
+-    const interval = setInterval(load, 5000);
++    const interval = setInterval(() => load(true), POLL_MS);
+     return () => clearInterval(interval);
+-  }, []);
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [boardKey, adminSecret]);
+ 
+-  async function submitPaid() {
+-    if (selected === null) return;
+-    setBusy(true);
+-    setError(null);
+-    const res = await fetch("/api/checkout", {
++  useEffect(() => {
++    if (settings) setTeamDraft({ home: settings.homeTeam, away: settings.awayTeam });
++  }, [settings?.homeTeam, settings?.awayTeam]);
++
++  const adminFetch = async (url: string, body: any) => {
++    const res = await fetch(url, {
+       method: "POST",
+-      headers: { "Content-Type": "application/json" },
+-      body: JSON.stringify({ squareId: selected, name, email }),
++      headers: { "Content-Type": "application/json", "x-admin-secret": adminSecret },
++      body: JSON.stringify({ board: boardKey, ...body }),
+     });
+-    const data = await res.json();
+-    setBusy(false);
+-    if (!res.ok) {
+-      setError(data.error);
++    const data = await res.json().catch(() => ({}));
++    if (!res.ok) throw new Error(data.error || "Request failed");
++    return data;
++  };
++
++  const [verifyingPin, setVerifyingPin] = useState(false);
++
++  const submitPin = async () => {
++    const candidate = secretInput;
++    setVerifyingPin(true);
++    setSecretError("");
++    try {
++      const res = await fetch("/api/admin/verify", {
++        method: "POST",
++        headers: { "x-admin-secret": candidate },
++      });
++      if (!res.ok) {
++        setSecretError("Incorrect admin secret.");
++        setVerifyingPin(false);
++        return;
++      }
++      setAdminSecret(candidate);
++      setIsAdmin(true);
++      setShowPinModal(false);
++      setSecretInput("");
++      setSecretError("");
++      showToast("Admin unlocked.");
++    } catch {
++      setSecretError("Could not verify right now — check your connection and try again.");
++    } finally {
++      setVerifyingPin(false);
++    }
++  };
++
++  const cellKey = (r: number, c: number) => `${r}-${c}`;
++
++  const reserveSquare = async (r: number, c: number) => {
++    if (!myName.trim() || !myEmail.trim()) {
++      showToast("Enter your name and email first (top of page) before picking a square.");
+       return;
+     }
+-    window.location.href = data.purchaseUrl;
+-  }
++    if (digits) {
++      showToast("Numbers are already drawn — board is locked.");
++      return;
++    }
++    const id = r * GRID + c;
++    setBusy(true);
++    setError(null);
++    try {
++      const res = await fetch("/api/checkout", {
++        method: "POST",
++        headers: { "Content-Type": "application/json" },
++        body: JSON.stringify({ board: boardKey, squareId: id, name: myName.trim(), email: myEmail.trim() }),
++      });
++      const data = await res.json();
++      if (!res.ok) {
++        setError(data.error);
++        setBusy(false);
++        return;
++      }
++      window.location.href = data.purchaseUrl;
++    } catch (e) {
++      setError("Could not start checkout. Please try again.");
++      setBusy(false);
++    }
++  };
+ 
+-  async function submitFree() {
++  const submitFree = async () => {
+     setBusy(true);
+     setError(null);
+-    const res = await fetch("/api/amoe", {
+-      method: "POST",
+-      headers: { "Content-Type": "application/json" },
+-      body: JSON.stringify({ name, email, mailingAddress: address }),
+-    });
+-    const data = await res.json();
+-    setBusy(false);
+-    if (!res.ok) {
+-      setError(data.error);
++    try {
++      const res = await fetch("/api/amoe", {
++        method: "POST",
++        headers: { "Content-Type": "application/json" },
++        body: JSON.stringify({ board: boardKey, name: myName.trim(), email: myEmail.trim(), mailingAddress: myAddress.trim() }),
++      });
++      const data = await res.json();
++      setBusy(false);
++      if (!res.ok) {
++        setError(data.error);
++        return;
++      }
++      setMode(null);
++      setSelected(null);
++      load();
++      showToast(`You've been entered on the ${meta.label}! Your square: #${data.squareId + 1}`);
++    } catch {
++      setBusy(false);
++      setError("Could not submit entry. Please try again.");
++    }
++  };
++
++  const adminClaimDirect = async (r: number, c: number) => {
++    const name = window.prompt("Name to assign this square to (e.g. paid by cash):", "");
++    if (!name || !name.trim()) return;
++    try {
++      await adminFetch("/api/admin/square", { squareId: r * GRID + c, action: "assign", name: name.trim() });
++      showToast(`Square assigned to ${name.trim()}.`);
++      load();
++    } catch (e: any) {
++      showToast(e.message || "Failed to assign square.");
++    }
++  };
++
++  const adminReleaseConfirmed = async (r: number, c: number) => {
++    try {
++      await adminFetch("/api/admin/square", { squareId: r * GRID + c, action: "release" });
++      showToast("Square released.");
++      load();
++    } catch (e: any) {
++      showToast(e.message || "Failed to release square.");
++    }
++  };
++
++  const handleCellTap = (r: number, c: number) => {
++    const key = cellKey(r, c);
++    const sq = squares[r * GRID + c];
++    if (!sq) return;
++
++    if (sq.status === "locked") {
++      if (revealCell === key) {
++        if (isAdmin) adminReleaseConfirmed(r, c);
++        else showToast(`Claimed by ${sq.ownerName}.`);
++        setRevealCell(null);
++        return;
++      }
++      setRevealCell(key);
++      setTimeout(() => setRevealCell((cur) => (cur === key ? null : cur)), 2600);
+       return;
+     }
+-    setMode(null);
+-    setSelected(null);
++
++    if (sq.status === "pending") {
++      if (revealCell === key) {
++        showToast(
++          isAdmin
++            ? `Pending checkout${sq.ownerName ? ` from ${sq.ownerName}` : ""} — ${timeUntil(sq.pendingExpiresAt)}.`
++            : "Someone is currently checking out for this square."
++        );
++        setRevealCell(null);
++        return;
++      }
++      setRevealCell(key);
++      setTimeout(() => setRevealCell((cur) => (cur === key ? null : cur)), 2600);
++      return;
++    }
++
++    // open
++    if (isAdmin) adminClaimDirect(r, c);
++    else {
++      setSelected(r * GRID + c);
++      setMode("paid");
++      setError(null);
++    }
++  };
++
++  const drawNumbers = async () => {
++    if (digits && !confirmingRedraw) {
++      setConfirmingRedraw(true);
++      return;
++    }
++    setConfirmingRedraw(false);
++    setFlipping(true);
++    for (let i = 0; i < 8; i++) {
++      setFlipRow(shuffledDigits());
++      setFlipCol(shuffledDigits());
++      await sleep(70);
++    }
++    try {
++      await adminFetch("/api/admin/randomize", {});
++      showToast("Numbers drawn! Board is locked.");
++    } catch (e: any) {
++      showToast(e.message || "Failed to draw numbers (already drawn?).");
++    }
++    setFlipping(false);
+     load();
+-    alert(`You've been entered! Your square: #${data.squareId}`);
++  };
++
++  const saveTeams = async () => {
++    try {
++      await adminFetch("/api/admin/config", { homeTeam: teamDraft.home || "HOME", awayTeam: teamDraft.away || "AWAY" });
++      showToast("Team names updated.");
++      load();
++    } catch (e: any) {
++      showToast(e.message || "Failed to update teams.");
++    }
++  };
++
++  const updateHousePct = async (value: string) => {
++    const n = Number(value.replace(/[^0-9.]/g, "")) || 0;
++    setSettings((s) => (s ? { ...s, housePct: n } : s));
++    try {
++      await adminFetch("/api/admin/config", { housePct: n });
++    } catch (e: any) {
++      showToast(e.message || "Failed to update house cut.");
++    }
++  };
++
++  const updateForwardPct = async (value: string) => {
++    const n = Number(value.replace(/[^0-9.]/g, "")) || 0;
++    setSettings((s) => (s ? { ...s, forwardPct: n } : s));
++    try {
++      await adminFetch("/api/admin/config", { forwardPct: n });
++    } catch (e: any) {
++      showToast(e.message || "Failed to update split.");
++    }
++  };
++
++  const updatePayoutSplit = async (qKey: QuarterKey, value: string) => {
++    const n = Number(value.replace(/[^0-9]/g, "")) || 0;
++    setSettings((s) => (s ? { ...s, payoutSplit: { ...s.payoutSplit, [qKey]: n } } : s));
++    try {
++      await adminFetch("/api/admin/config", { payoutSplit: { [qKey]: n } });
++    } catch (e: any) {
++      showToast(e.message || "Failed to update payout split.");
++    }
++  };
++
++  const updateScore = async (qKey: QuarterKey, side: "home" | "away", value: string) => {
++    const cleaned = value.replace(/[^0-9]/g, "");
++    setQuarters((q) => (q ? { ...q, [qKey]: { ...q[qKey], [side]: cleaned } } : q));
++    try {
++      await adminFetch("/api/admin/score", { quarter: qKey, side, value: cleaned });
++    } catch (e: any) {
++      showToast(e.message || "Failed to save score.");
++    }
++  };
++
++  const computeWinner = async (qKey: QuarterKey) => {
++    try {
++      await adminFetch("/api/admin/score", { quarter: qKey, computeWinner: true });
++      showToast(`${qLabel(qKey)} winner computed.`);
++      load();
++    } catch (e: any) {
++      showToast(e.message || "Draw numbers and enter both scores first.");
++    }
++  };
++
++  const doResetBoard = async () => {
++    if (!confirmingReset) {
++      setConfirmingReset(true);
++      return;
++    }
++    setConfirmingReset(false);
++    try {
++      await adminFetch("/api/admin/reset", {});
++      showToast("Board reset.");
++      load();
++    } catch (e: any) {
++      showToast(e.message || "Failed to reset board.");
++    }
++  };
++
++  if (loading || !settings || !quarters) {
++    return (
++      <div style={styles.loadingWrap}>
++        <div style={styles.loadingCard}>
++          <div style={styles.loadingDot} />
++          <span style={{ fontFamily: "'Space Mono', monospace" }}>Loading the board…</span>
++        </div>
++      </div>
++    );
+   }
+ 
++  const drawn = !!digits;
++  const claimedCount = squares.filter((s) => s.status === "locked").length;
++  const pendingSquares = squares.filter((s) => s.status === "pending");
++  const pot = claimedCount * meta.price;
++  const houseCut = pot * (settings.housePct / 100);
++  const netPool = pot - houseCut;
++  const payoutTotalPct = Object.values(settings.payoutSplit).reduce((a, b) => a + b, 0);
++  const quarterAmount = (qKey: QuarterKey) => (netPool * (settings.payoutSplit[qKey] || 0)) / 100;
++  const forwardAmount = (qKey: QuarterKey) => (quarterAmount(qKey) * settings.forwardPct) / 100;
++  const backwardAmount = (qKey: QuarterKey) => (quarterAmount(qKey) * (100 - settings.forwardPct)) / 100;
++
+   return (
+-    <main style={{ maxWidth: 720, margin: "0 auto", padding: 24, fontFamily: "system-ui" }}>
+-      <h1>SwineHeadz Squares</h1>
+-      <p>
+-        Pick an open square for $10, or use the free entry method below — both
+-        give identical odds to win. No purchase necessary to enter or win.
+-      </p>
+-
+-      <div style={{ display: "grid", gridTemplateColumns: "repeat(10, 1fr)", gap: 4, margin: "24px 0" }}>
+-        {squares.map((sq) => (
+-          <button
+-            key={sq.id}
+-            disabled={sq.status !== "open"}
+-            onClick={() => {
+-              setSelected(sq.id);
+-              setMode("paid");
+-              setError(null);
+-            }}
+-            style={{
+-              aspectRatio: "1",
+-              fontSize: 11,
+-              background:
+-                sq.status === "open" ? "#fff" : sq.status === "pending" ? "#fde68a" : "#a3a3a3",
+-              border: selected === sq.id ? "2px solid #2563eb" : "1px solid #ddd",
+-              cursor: sq.status === "open" ? "pointer" : "not-allowed",
+-            }}
+-            title={sq.ownerName ?? "Open"}
+-          >
+-            {sq.status === "locked" ? "X" : sq.id}
++    <div style={styles.boardOuter}>
++      {toast && <div style={styles.toast}>{toast}</div>}
++
++      {showPinModal && (
++        <div style={styles.modalOverlay} onClick={() => setShowPinModal(false)}>
++          <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
++            <div style={styles.panelLabel}>Admin secret</div>
++            <input
++              style={styles.input}
++              type="password"
++              placeholder="ADMIN_SECRET"
++              value={secretInput}
++              autoFocus
++              onChange={(e) => {
++                setSecretInput(e.target.value);
++                setSecretError("");
++              }}
++              onKeyDown={(e) => e.key === "Enter" && !verifyingPin && submitPin()}
++            />
++            {secretError && <div style={styles.errorBox}>{secretError}</div>}
++            <button style={{ ...styles.primaryBtn, marginTop: 12, opacity: verifyingPin ? 0.6 : 1 }} onClick={submitPin} disabled={verifyingPin}>
++              {verifyingPin ? "Checking…" : "Unlock"}
++            </button>
++            <button
++              style={{ ...styles.ghostBtn, marginTop: 8 }}
++              onClick={() => {
++                setShowPinModal(false);
++                setSecretInput("");
++                setSecretError("");
++              }}
++            >
++              Cancel
++            </button>
++            <div style={styles.hint}>
++              This is the same ADMIN_SECRET set in Vercel env vars — shared across both boards.
++            </div>
++          </div>
++        </div>
++      )}
++
++      <div style={styles.viewToggleRow}>
++        {isAdmin ? (
++          <>
++            <span style={styles.adminBadge}>ADMIN · {meta.label.toUpperCase()}</span>
++            <button style={styles.linkBtn} onClick={() => setIsAdmin(false)}>
++              View as player
++            </button>
++          </>
++        ) : (
++          <button style={styles.linkBtn} onClick={() => setShowPinModal(true)}>
++            Admin login
+           </button>
+-        ))}
++        )}
+       </div>
+ 
+-      {mode === "paid" && selected !== null && (
+-        <div style={{ border: "1px solid #ddd", padding: 16, marginBottom: 16 }}>
+-          <h3>Claim square #{selected} — $10</h3>
+-          <input placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
+-          <input placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
+-          <button disabled={busy || !name || !email} onClick={submitPaid}>
+-            {busy ? "Loading..." : "Pay with Whop"}
+-          </button>
++      {/* Setup / info panel */}
++      <section style={styles.panel}>
++        {!isAdmin && (
++          <>
++            <div style={styles.panelLabel}>Your info</div>
++            <input
++              style={styles.input}
++              placeholder="Name"
++              value={myName}
++              onChange={(e) => setMyName(e.target.value)}
++              maxLength={40}
++            />
++            <input
++              style={{ ...styles.input, marginTop: 8 }}
++              placeholder="Email"
++              value={myEmail}
++              onChange={(e) => setMyEmail(e.target.value)}
++              maxLength={80}
++            />
++            <div style={styles.hint}>
++              {settings.homeTeam} vs {settings.awayTeam} · {formatMoney(meta.price)} per square
++            </div>
++          </>
++        )}
++
++        {isAdmin && (
++          <>
++            <div style={styles.panelLabel}>Teams</div>
++            <div style={styles.teamRow}>
++              <input
++                style={{ ...styles.input, marginBottom: 8 }}
++                placeholder="Home team"
++                value={teamDraft.home}
++                onChange={(e) => setTeamDraft((t) => ({ ...t, home: e.target.value }))}
++                maxLength={16}
++              />
++              <input
++                style={styles.input}
++                placeholder="Away team"
++                value={teamDraft.away}
++                onChange={(e) => setTeamDraft((t) => ({ ...t, away: e.target.value }))}
++                maxLength={16}
++              />
++            </div>
++            <button style={styles.ghostBtn} onClick={saveTeams}>
++              Save team names
++            </button>
++
++            <div style={styles.divider} />
++
++            <div style={styles.hint}>
++              Price is fixed at {formatMoney(meta.price)}/square via the Whop plan for this board
++              (change the plan in Whop to adjust price).
++            </div>
++
++            <div style={styles.panelLabel}>House cut</div>
++            <div style={styles.priceRow}>
++              <input style={styles.input} inputMode="decimal" value={settings.housePct} onChange={(e) => updateHousePct(e.target.value)} />
++              <span style={styles.priceSign}>%</span>
++            </div>
++
++            <div style={styles.potLine}>
++              {claimedCount} squares confirmed ({pendingSquares.length} pending) · pot is <strong>{formatMoney(pot)}</strong>
++              <br />
++              house keeps <strong>{formatMoney(houseCut)}</strong> · net pool is <strong>{formatMoney(netPool)}</strong>
++            </div>
++
++            <div style={styles.panelLabel}>Forward / backward split</div>
++            <div style={styles.priceRow}>
++              <input style={styles.input} inputMode="decimal" value={settings.forwardPct} onChange={(e) => updateForwardPct(e.target.value)} />
++              <span style={styles.priceSign}>%</span>
++            </div>
++            <div style={styles.hint}>
++              Forward gets {settings.forwardPct}% of each quarter's payout, backward gets the remaining{" "}
++              {(100 - settings.forwardPct).toFixed(1).replace(/\.0$/, "")}%.
++            </div>
++
++            <div style={styles.panelLabel}>Payout split by quarter</div>
++            {QUARTER_KEYS.map((qKey) => (
++              <div key={qKey} style={styles.payoutBlock}>
++                <div style={styles.payoutRow}>
++                  <span style={styles.payoutLabel}>{qLabel(qKey)}</span>
++                  <input
++                    style={styles.payoutInput}
++                    inputMode="numeric"
++                    value={settings.payoutSplit[qKey]}
++                    onChange={(e) => updatePayoutSplit(qKey, e.target.value)}
++                  />
++                  <span style={styles.payoutPct}>% of net</span>
++                  <span style={styles.payoutAmount}>{formatMoney(quarterAmount(qKey))}</span>
++                </div>
++                <div style={styles.payoutSubRow}>
++                  <span>↳ forward {formatMoney(forwardAmount(qKey))}</span>
++                  <span>↳ backward {formatMoney(backwardAmount(qKey))}</span>
++                </div>
++              </div>
++            ))}
++            <div style={{ ...styles.hint, color: payoutTotalPct === 100 ? theme.muted : theme.danger }}>
++              {payoutTotalPct === 100 ? "Splits add up to 100% of the net pool." : `Splits add up to ${payoutTotalPct}% — should total 100%.`}
++            </div>
++
++            <div style={styles.divider} />
++
++            <button style={{ ...styles.primaryBtn, opacity: flipping ? 0.6 : 1 }} onClick={drawNumbers} disabled={flipping}>
++              {flipping ? "Drawing…" : confirmingRedraw ? "Tap again to confirm redraw" : drawn ? "Already drawn" : "Draw numbers"}
++            </button>
++            {confirmingRedraw && (
++              <button style={{ ...styles.ghostBtn, marginTop: 6 }} onClick={() => setConfirmingRedraw(false)}>
++                Cancel
++              </button>
++            )}
++            <div style={styles.hint}>
++              {drawn
++                ? "Numbers are locked in — entries are closed for this board. Redraw isn't supported from here; delete the board's digits key in KV to redo (testing only)."
++                : "Confirm squares first, then draw to lock the board and assign digits 0–9."}
++            </div>
++
++            <div style={styles.divider} />
++
++            <button style={styles.dangerBtn} onClick={doResetBoard}>
++              {confirmingReset ? "Tap again to confirm reset" : "Reset this board (squares, digits, quarters)"}
++            </button>
++            {confirmingReset && (
++              <button style={{ ...styles.ghostBtn, marginTop: 6 }} onClick={() => setConfirmingReset(false)}>
++                Cancel
++              </button>
++            )}
++          </>
++        )}
++
++        {!isAdmin && (
++          <div style={styles.potLine}>
++            {claimedCount} squares claimed · pot is <strong>{formatMoney(pot)}</strong>
++          </div>
++        )}
++      </section>
++
++      {/* Board — styled as a football field */}
++      <section style={styles.boardWrap}>
++        <div style={styles.turfField}>
++          <div style={styles.headerPillWrap}>
++            <div style={styles.headerPill}>
++              <img src="/mascot.webp" alt="" style={styles.headerPillMascot} />
++              <span style={styles.headerPillWordmark}>SWINEHEADZ</span>
++              <span style={styles.headerPillTag}>{meta.label.toUpperCase()}</span>
++            </div>
++          </div>
++
++          <HogPlayer theme={theme} corner="bl" pose="run" />
++          <HogPlayer theme={theme} corner="tr" pose="block" />
++          <HogPlayer theme={theme} corner="br" pose="reach" />
++
++          <div style={styles.yardRail("left")} aria-hidden="true">
++            {["GOAL", "10", "20", "30", "40", "50", "40", "30", "20", "10", "GOAL"].map((v, i) => (
++              <span key={i} style={styles.yardRailLabel}>
++                {v}
++              </span>
++            ))}
++          </div>
++          <div style={styles.yardRail("right")} aria-hidden="true">
++            {["GOAL", "10", "20", "30", "40", "50", "40", "30", "20", "10", "GOAL"].map((v, i) => (
++              <span key={i} style={styles.yardRailLabel}>
++                {v}
++              </span>
++            ))}
++          </div>
++
++          <div style={styles.boardScroll}>
++            <div style={styles.axisAwayLabel}>{settings.awayTeam} →</div>
++            <div style={styles.boardGridOuter}>
++              <div style={styles.axisHomeLabel}>
++                <span>{settings.homeTeam} ↓</span>
++              </div>
++              <div style={styles.gridPlate}>
++                <div style={styles.headerRow}>
++                  <div style={styles.cornerCell} />
++                  {Array.from({ length: GRID }).map((_, c) => (
++                    <div key={c} style={styles.numCell}>
++                      {flipping ? (flipCol ? flipCol[c] : "–") : digits ? digits.cols[c] : "–"}
++                    </div>
++                  ))}
++                </div>
++                {Array.from({ length: GRID }).map((_, r) => (
++                  <div key={r} style={styles.bodyRow}>
++                    <div style={styles.numCell}>{flipping ? (flipRow ? flipRow[r] : "–") : digits ? digits.rows[r] : "–"}</div>
++                    {Array.from({ length: GRID }).map((_, c) => {
++                      const id = r * GRID + c;
++                      const sq = squares[id];
++                      const key = cellKey(r, c);
++                      const isRevealed = revealCell === key;
++                      const isMine = sq?.status === "locked" && myName.trim() && sq.ownerName === myName.trim();
++                      let cellStyle: React.CSSProperties = { ...styles.cell };
++                      if (sq?.status === "locked") {
++                        cellStyle = { ...cellStyle, ...styles.cellFilled };
++                        if (isMine) cellStyle = { ...cellStyle, ...styles.cellMine };
++                      } else if (sq?.status === "pending") {
++                        cellStyle = { ...cellStyle, ...styles.cellPending };
++                      }
++                      const win = quarters ? getWinnerHighlight(quarters, r, c) : null;
++                      if (win === "forward") cellStyle = { ...cellStyle, ...styles.cellWinnerForward };
++                      if (win === "backward") cellStyle = { ...cellStyle, ...styles.cellWinnerBackward };
++                      if (isRevealed) cellStyle = { ...cellStyle, ...styles.cellRevealed };
++
++                      return (
++                        <div key={c} style={styles.cellSlot}>
++                          {isRevealed && (
++                            <div style={styles.revealBubble}>
++                              <span style={styles.revealName}>{sq?.ownerName || (sq?.status === "pending" ? "Pending…" : "")}</span>
++                              <span style={styles.revealHint}>
++                                {sq?.status === "locked"
++                                  ? isAdmin
++                                    ? "tap again to release"
++                                    : "confirmed"
++                                  : sq?.status === "pending"
++                                  ? isAdmin
++                                    ? "tap again for details"
++                                    : "checkout in progress"
++                                  : ""}
++                              </span>
++                            </div>
++                          )}
++                          <button
++                            style={cellStyle}
++                            onClick={() => handleCellTap(r, c)}
++                            title={sq?.status === "locked" ? sq.ownerName : sq?.status === "pending" ? "Pending checkout" : "Open square"}
++                          >
++                            <span style={styles.cellNumber}>{id + 1}</span>
++                            {sq?.status === "locked" && sq.ownerName ? (
++                              <span style={styles.cellName}>{sq.ownerName.length > 9 ? initials(sq.ownerName) : sq.ownerName}</span>
++                            ) : sq?.status === "pending" ? (
++                              "…"
++                            ) : (
++                              ""
++                            )}
++                          </button>
++                        </div>
++                      );
++                    })}
++                  </div>
++                ))}
++              </div>
++            </div>
++          </div>
++
++          <div style={styles.endzoneBottomText}>
++            <span style={styles.endzoneBottomLabel}>GOAL</span>
++            <span style={styles.endzoneBottomWordmark}>NETWORK</span>
++            <span style={styles.endzoneBottomTag}>EST. GAME DAY</span>
++            <span style={styles.endzoneBottomLabel}>GOAL</span>
++          </div>
+         </div>
++
++        <div style={styles.legendRow}>
++          <span style={styles.legendItem}>
++            <span style={{ ...styles.legendSwatch, ...styles.cellFilled }} /> Confirmed
++          </span>
++          <span style={styles.legendItem}>
++            <span style={{ ...styles.legendSwatch, ...styles.cellPending }} /> Pending payment
++          </span>
++          <span style={styles.legendItem}>
++            <span style={{ ...styles.legendSwatch, ...styles.cellMine }} /> Yours
++          </span>
++        </div>
++      </section>
++
++      {/* Player entry panel */}
++      {!isAdmin && (
++        <section style={styles.panel}>
++          {mode === "paid" && selected !== null && (
++            <>
++              <div style={styles.panelLabel}>
++                Claim square #{selected + 1} — {formatMoney(meta.price)}
++              </div>
++              <button style={{ ...styles.primaryBtn, opacity: busy ? 0.6 : 1 }} disabled={busy || !myName || !myEmail} onClick={() => reserveSquare(Math.floor(selected / GRID), selected % GRID)}>
++                {busy ? "Loading…" : "Pay with Whop"}
++              </button>
++              <div style={styles.divider} />
++            </>
++          )}
++          <div style={styles.panelLabel}>Free entry (no purchase necessary)</div>
++          <p style={styles.hint}>
++            You'll be randomly assigned an open square on the {meta.label} with the same odds as a paid entry.
++          </p>
++          <input style={styles.input} placeholder="Mailing address" value={myAddress} onChange={(e) => setMyAddress(e.target.value)} />
++          <button
++            style={{ ...styles.ghostBtn, marginTop: 8 }}
++            disabled={busy || !myName || !myEmail || !myAddress}
++            onClick={submitFree}
++          >
++            {busy ? "Submitting…" : "Enter free"}
++          </button>
++          {error && <div style={styles.errorBox}>{error}</div>}
++        </section>
+       )}
+ 
+-      <div style={{ border: "1px solid #ddd", padding: 16 }}>
+-        <h3>Free entry (no purchase necessary)</h3>
+-        <p style={{ fontSize: 13, color: "#555" }}>
+-          You'll be randomly assigned an open square with the same odds as a
+-          paid entry.
+-        </p>
+-        <input placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
+-        <input placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
+-        <input placeholder="Mailing address" value={address} onChange={(e) => setAddress(e.target.value)} />
+-        <button
+-          disabled={busy || !name || !email || !address}
+-          onClick={() => {
+-            setMode("free");
+-            submitFree();
+-          }}
+-        >
+-          {busy ? "Submitting..." : "Enter free"}
+-        </button>
++      {/* Pending queue (admin only) */}
++      {isAdmin && (
++        <section style={styles.panel}>
++          <div style={styles.panelLabel}>Pending checkouts ({pendingSquares.length})</div>
++          {pendingSquares.length === 0 ? (
++            <div style={styles.hint}>No checkouts in progress right now.</div>
++          ) : (
++            pendingSquares.map((sq) => (
++              <div key={sq.id} style={styles.queueRow}>
++                <span style={styles.queueSquare}>#{sq.id + 1}</span>
++                <span style={styles.queueName}>{sq.ownerName || "—"}</span>
++                <span style={styles.queueTime}>{timeUntil(sq.pendingExpiresAt)}</span>
++                <button style={styles.smallGhostBtn} onClick={() => adminReleaseConfirmed(Math.floor(sq.id / GRID), sq.id % GRID)}>
++                  Release
++                </button>
++              </div>
++            ))
++          )}
++          <div style={styles.hint}>
++            Whop's webhook confirms payment and locks the square automatically — you only need
++            Release here for a stuck or abandoned checkout. Holds auto-expire after 10 minutes on
++            their own either way.
++          </div>
++        </section>
++      )}
++
++      {/* Scores + winners */}
++      <section style={styles.panel}>
++        {isAdmin ? (
++          <>
++            <div style={styles.panelLabel}>Quarter scores</div>
++            {QUARTER_KEYS.map((qKey) => {
++              const q = quarters[qKey];
++              return (
++                <div key={qKey} style={styles.scoreRow}>
++                  <div style={styles.scoreLabel}>{qLabel(qKey)}</div>
++                  <input
++                    style={styles.scoreInput}
++                    inputMode="numeric"
++                    placeholder={settings.homeTeam.slice(0, 3).toUpperCase()}
++                    value={q.home}
++                    onChange={(e) => updateScore(qKey, "home", e.target.value)}
++                  />
++                  <input
++                    style={styles.scoreInput}
++                    inputMode="numeric"
++                    placeholder={settings.awayTeam.slice(0, 3).toUpperCase()}
++                    value={q.away}
++                    onChange={(e) => updateScore(qKey, "away", e.target.value)}
++                  />
++                  <button style={styles.smallBtn} onClick={() => computeWinner(qKey)}>
++                    Set
++                  </button>
++                </div>
++              );
++            })}
++            <div style={styles.divider} />
++          </>
++        ) : (
++          <div style={styles.panelLabel}>
++            {settings.homeTeam} vs {settings.awayTeam} — Winners
++          </div>
++        )}
++
++        {isAdmin && <div style={styles.panelLabel}>Winners</div>}
++        {QUARTER_KEYS.every((k) => !quarters[k].winner) ? (
++          <div style={styles.hint}>No winners yet.</div>
++        ) : (
++          QUARTER_KEYS.map((qKey) => {
++            const q = quarters[qKey];
++            if (!q.winner) return null;
++            return (
++              <div key={qKey} style={styles.winnerBlock}>
++                <div style={styles.winnerRow}>
++                  <span style={styles.winnerQ}>{qLabel(qKey)} fwd</span>
++                  <span style={styles.winnerName}>{q.winner.forward.name}</span>
++                  <span style={styles.winnerPayout}>{formatMoney(forwardAmount(qKey))}</span>
++                </div>
++                <div style={styles.winnerRow}>
++                  <span style={styles.winnerQ}>{qLabel(qKey)} back</span>
++                  <span style={styles.winnerName}>{q.winner.backward.name}</span>
++                  <span style={styles.winnerPayout}>{formatMoney(backwardAmount(qKey))}</span>
++                </div>
++              </div>
++            );
++          })
++        )}
++      </section>
++    </div>
++  );
++}
++
++// ============================================================================
++// App shell — logo, brand header, tab switcher, yard ticker
++// ============================================================================
++
++export default function SwineheadzSquaresApp() {
++  const [activeKey, setActiveKey] = useState<BoardKey>("silver");
++  const theme = THEMES[activeKey];
++
++  return (
++    <div style={{ ...outerStyles.page, background: pageTurfBackground(theme) }}>
++      <style>{fontImport + keyframes}</style>
++
++      <div style={outerStyles.cornerTabRow}>
++        {(Object.keys(BOARD_META) as BoardKey[]).map((key) => {
++          const t = THEMES[key];
++          const active = key === activeKey;
++          const m = BOARD_META[key];
++          return (
++            <button key={key} onClick={() => setActiveKey(key)} style={outerStyles.cornerTab(t, active)}>
++              <span style={outerStyles.cornerTabLabel}>{m.label}</span>
++              <span style={outerStyles.cornerTabSub}>${m.price} / square</span>
++            </button>
++          );
++        })}
+       </div>
+ 
+-      {error && <p style={{ color: "red" }}>{error}</p>}
++      <header style={outerStyles.header}>
++        <img src="/logo.webp" alt="Swineheadz Network" style={outerStyles.logo} />
++        <h1 style={outerStyles.title}>
++          <span style={{ ...outerStyles.titleStitch, borderBottomColor: theme.accent }}>SWINEHEADZ SQUARES</span>
++        </h1>
++        <p style={outerStyles.subtitle}>SWINEHEADZ NETWORK · 100 SQUARES · WINNER EVERY QUARTER</p>
++      </header>
+ 
+-      {digits && (
+-        <p style={{ marginTop: 16, fontSize: 13, color: "#555" }}>
+-          Digits have been randomized — the board is locked for entries.
+-        </p>
+-      )}
+-    </main>
++      <main style={outerStyles.main}>
++        <BoardPanel key={activeKey} boardKey={activeKey} theme={theme} />
++      </main>
++    </div>
+   );
+ }
++
++// ============================================================================
++// styles
++// ============================================================================
++
++const fontImport = `
++@import url('https://fonts.googleapis.com/css2?family=Anton&family=Space+Mono:wght@400;700&family=Inter:wght@400;500;600;700&display=swap');
++`;
++const keyframes = `
++@keyframes dotPulse { 0%,100%{opacity:.3} 50%{opacity:1} }
++@keyframes popIn { 0%{opacity:0; transform:translateX(-50%) scale(0.85);} 100%{opacity:1; transform:translateX(-50%) scale(1);} }
++`;
++
++const outerStyles: any = {
++  page: { minHeight: "100vh", fontFamily: "'Inter', sans-serif", paddingBottom: 40 },
++  header: { padding: "28px 20px 0", textAlign: "center", position: "relative", maxWidth: 720, margin: "0 auto" },
++  logo: { width: "clamp(120px, 26vw, 200px)", height: "auto", objectFit: "contain", filter: "drop-shadow(0 10px 22px rgba(0,0,0,0.55))" },
++  title: { fontFamily: "'Anton', sans-serif", fontSize: "clamp(30px, 8vw, 52px)", letterSpacing: "0.03em", margin: "10px 0 0", color: "#F3EEDF" },
++  titleStitch: { borderBottom: "3px dashed", paddingBottom: 4 },
++  subtitle: { fontFamily: "'Space Mono', monospace", fontSize: 12, color: "#9aa4ac", marginTop: 10, letterSpacing: "0.04em" },
++  cornerTabRow: { display: "flex", justifyContent: "space-between", maxWidth: 1000, margin: "0 auto", padding: "20px 16px 0", gap: 12 },
++  cornerTab: (t: Theme, active: boolean) => ({
++    display: "flex",
++    flexDirection: "column" as const,
++    alignItems: "flex-start" as const,
++    gap: 1,
++    padding: "10px 16px",
++    borderRadius: 8,
++    border: `1.5px solid ${active ? t.accent : "rgba(255,255,255,0.25)"}`,
++    cursor: "pointer",
++    fontFamily: "'Space Mono', monospace",
++    background: active
++      ? `linear-gradient(155deg, ${t.accent} 0%, ${t.bg} 55%, ${t.accent} 100%)`
++      : "rgba(20,22,25,0.55)",
++    color: active ? t.ink : "#C7CCD2",
++    boxShadow: active ? "0 4px 12px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.4)" : "none",
++    transition: "all 0.15s ease-out",
++  }),
++  cornerTabLabel: { fontSize: 12, fontWeight: 700, letterSpacing: "0.03em" },
++  cornerTabSub: { fontSize: 10, opacity: 0.85 },
++  main: { maxWidth: 1100, margin: "24px auto 0", padding: "0 16px" },
++};
++
++function getStyles(theme: Theme): any {
++  return {
++    boardOuter: { display: "grid", gridTemplateColumns: "1fr", gap: 20, color: theme.chalk },
++    loadingWrap: { minHeight: "40vh", display: "flex", alignItems: "center", justifyContent: "center", color: theme.chalk },
++    loadingCard: { display: "flex", alignItems: "center", gap: 10 },
++    loadingDot: { width: 10, height: 10, borderRadius: "50%", background: theme.accent, animation: "dotPulse 1s infinite" },
++    toast: { position: "fixed", top: 14, left: "50%", transform: "translateX(-50%)", background: theme.ink, color: theme.chalk, padding: "10px 16px", borderRadius: 8, fontSize: 13, fontFamily: "'Space Mono', monospace", zIndex: 50, border: `1px solid ${theme.accent}`, boxShadow: "0 6px 20px rgba(0,0,0,0.4)", maxWidth: "88vw", textAlign: "center" },
++    modalOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60, padding: 20 },
++    modalCard: { background: theme.panel, color: theme.ink, borderRadius: 14, padding: 20, width: "100%", maxWidth: 320, boxShadow: "0 12px 32px rgba(0,0,0,0.4)" },
++    viewToggleRow: { display: "flex", justifyContent: "center", alignItems: "center", gap: 10 },
++    linkBtn: { background: "none", border: "none", color: theme.accent, fontFamily: "'Space Mono', monospace", fontSize: 12, textDecoration: "underline", cursor: "pointer", padding: 4 },
++    adminBadge: { fontFamily: "'Space Mono', monospace", fontSize: 10, letterSpacing: "0.06em", color: theme.ink, background: theme.accent, padding: "3px 8px", borderRadius: 4, fontWeight: 700 },
++    panel: { background: theme.panel, color: theme.ink, borderRadius: 14, padding: 18, boxShadow: "0 8px 24px rgba(0,0,0,0.25)" },
++    panelLabel: { fontFamily: "'Space Mono', monospace", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: theme.muted, marginBottom: 8, marginTop: 14 },
++    input: { width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 8, border: `1.5px solid ${theme.panelBorder}`, fontSize: 14, fontFamily: "'Inter', sans-serif", outline: "none", background: theme.panelInput, color: theme.ink },
++    teamRow: { display: "flex", flexDirection: "column" },
++    ghostBtn: { width: "100%", padding: "9px 12px", borderRadius: 8, border: `1.5px solid ${theme.bg}`, background: "transparent", color: theme.bg, fontWeight: 600, fontSize: 13, cursor: "pointer" },
++    primaryBtn: { width: "100%", padding: "13px 12px", borderRadius: 8, border: "none", background: theme.accent, color: theme.ink, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: "'Space Mono', monospace", letterSpacing: "0.03em" },
++    hint: { fontSize: 12, color: theme.muted, marginTop: 8, lineHeight: 1.5 },
++    divider: { height: 1, background: theme.panelBorder, margin: "16px 0" },
++    dangerBtn: { marginTop: 20, width: "100%", padding: "9px 12px", borderRadius: 8, border: `1.5px solid ${theme.danger}`, background: "transparent", color: theme.danger, fontWeight: 600, fontSize: 12, cursor: "pointer" },
++    errorBox: { marginTop: 12, fontSize: 12, color: theme.danger, fontFamily: "'Space Mono', monospace" },
++    boardWrap: { background: theme.bgDark, borderRadius: 14, overflow: "hidden", boxShadow: `0 10px 28px rgba(0,0,0,0.4), inset 0 0 0 1px ${theme.accentSoftBorder}` },
++    headerPillWrap: { display: "flex", justifyContent: "center", paddingTop: 14, position: "relative", zIndex: 3 },
++    headerPill: {
++      display: "flex",
++      alignItems: "center",
++      gap: 8,
++      padding: "7px 18px 7px 8px",
++      borderRadius: 999,
++      background: `linear-gradient(155deg, ${theme.accent} 0%, ${theme.bg} 55%, ${theme.accent} 100%)`,
++      boxShadow: "0 6px 16px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.4)",
++      border: `1px solid ${theme.accentSoftBorder}`,
++    },
++    headerPillMascot: { width: 24, height: 24, objectFit: "contain", borderRadius: "50%", background: "#EDEDED", padding: 2, boxShadow: `0 0 0 1.5px ${theme.ink}` },
++    headerPillWordmark: { fontFamily: "'Anton', sans-serif", fontSize: 15, letterSpacing: "0.04em", color: theme.ink, fontStyle: "italic" },
++    headerPillTag: { fontFamily: "'Space Mono', monospace", fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", color: theme.ink, opacity: 0.75 },
++    turfField: {
++      position: "relative",
++      overflow: "hidden",
++      padding: "8px 34px 30px",
++      background: `repeating-linear-gradient(90deg, rgba(255,255,255,0.045) 0px, rgba(255,255,255,0.045) 2px, transparent 2px, transparent 42px), repeating-linear-gradient(180deg, rgba(255,255,255,0.05) 0px, rgba(255,255,255,0.05) 60px, transparent 60px, transparent 120px), linear-gradient(180deg, #1F4D2B 0%, #16371F 100%)`,
++      boxShadow: "inset 0 0 46px rgba(0,0,0,0.5)",
++    },
++    yardRail: (side: "left" | "right") => ({
++      position: "absolute" as const,
++      top: 70,
++      bottom: 46,
++      [side]: 8,
++      width: 20,
++      display: "flex",
++      flexDirection: "column" as const,
++      justifyContent: "space-between" as const,
++      alignItems: "center" as const,
++      zIndex: 1,
++    }),
++    yardRailLabel: {
++      fontFamily: "'Space Mono', monospace",
++      fontSize: 9,
++      fontWeight: 700,
++      letterSpacing: "0.05em",
++      color: theme.accent,
++      opacity: 0.75,
++      writingMode: "vertical-rl" as const,
++      transform: "rotate(180deg)",
++      textShadow: "0 1px 2px rgba(0,0,0,0.6)",
++    },
++    boardScroll: { position: "relative", zIndex: 2, overflowX: "auto", paddingBottom: 4, paddingTop: 20 },
++    axisAwayLabel: { fontFamily: "'Space Mono', monospace", fontSize: 12, color: theme.accent, marginBottom: 6, marginLeft: 44, textShadow: "0 1px 3px rgba(0,0,0,0.8)" },
++    boardGridOuter: { display: "flex", gap: 10, minWidth: 560 },
++    gridPlate: { background: "rgba(0,0,0,0.4)", borderRadius: 10, padding: 8, boxShadow: `inset 0 0 0 1px ${theme.accentSofter}` },
++    axisHomeLabel: { writingMode: "vertical-rl", transform: "rotate(180deg)", fontFamily: "'Space Mono', monospace", fontSize: 13, color: theme.accent, display: "flex", alignItems: "center" },
++    endzoneBottomText: {
++      display: "flex",
++      alignItems: "center",
++      justifyContent: "center",
++      gap: 10,
++      marginTop: 14,
++      fontFamily: "'Space Mono', monospace",
++    },
++    endzoneBottomLabel: { fontSize: 11, fontWeight: 700, letterSpacing: "0.15em", color: theme.accent, opacity: 0.8 },
++    endzoneBottomWordmark: { fontFamily: "'Anton', sans-serif", fontSize: 16, letterSpacing: "0.05em", color: theme.chalk, fontStyle: "italic" },
++    endzoneBottomTag: { fontSize: 10, letterSpacing: "0.08em", color: theme.chalkDim },
++    headerRow: { display: "flex" },
++    bodyRow: { display: "flex" },
++    cornerCell: { width: 44, height: 44, flexShrink: 0 },
++    numCell: { width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Space Mono', monospace", fontSize: 15, color: theme.accent, fontWeight: 700, flexShrink: 0 },
++    cellSlot: { position: "relative", width: 48, height: 48, flexShrink: 0 },
++    cellRevealed: { transform: "scale(1.14)", zIndex: 5, boxShadow: "0 4px 14px rgba(0,0,0,0.45)" },
++    revealBubble: { position: "absolute", bottom: "calc(100% + 8px)", left: "50%", transform: "translateX(-50%)", background: theme.ink, border: `1.5px solid ${theme.accent}`, borderRadius: 8, padding: "8px 12px", whiteSpace: "nowrap", zIndex: 30, textAlign: "center", boxShadow: "0 8px 20px rgba(0,0,0,0.5)", animation: "popIn 0.15s ease-out", pointerEvents: "none" },
++    revealName: { display: "block", fontFamily: "'Anton', sans-serif", fontSize: 19, letterSpacing: "0.02em", color: theme.chalk },
++    revealHint: { display: "block", fontFamily: "'Space Mono', monospace", fontSize: 9, color: theme.accent, marginTop: 2 },
++    cell: {
++      width: 46,
++      height: 46,
++      flexShrink: 0,
++      margin: 1,
++      borderRadius: 6,
++      border: "1.5px solid rgba(20,20,20,0.85)",
++      background: "#F4F2EA",
++      color: "#15171A",
++      fontSize: 15,
++      fontFamily: "'Space Mono', monospace",
++      fontWeight: 700,
++      cursor: "pointer",
++      padding: 0,
++      position: "relative",
++      transition: "transform 0.15s ease-out, box-shadow 0.15s ease-out",
++    },
++    cellNumber: { position: "absolute", top: 2, left: 3, fontSize: 8, fontWeight: 400, opacity: 0.5, lineHeight: 1 },
++    cellName: { fontSize: 9, fontWeight: 700, lineHeight: 1.1, padding: "0 3px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%", display: "block" },
++    cellFilled: { background: "#FFFFFF", border: `2px solid ${theme.ink}` },
++    cellMine: { background: theme.mineSoft, border: `2px solid ${theme.accent}` },
++    cellPending: { background: theme.pendingSoft, border: `1.5px dashed ${theme.pendingAccent}`, color: "#EFEFEF" },
++    cellWinnerForward: { background: theme.danger, border: `2px solid ${theme.winnerForwardBorder}`, color: theme.winnerForwardText },
++    cellWinnerBackward: { background: theme.accent, border: `2px solid ${theme.winnerBackwardBorder}`, color: theme.winnerBackwardText },
++    legendRow: { display: "flex", flexWrap: "wrap", gap: 14, padding: "12px 16px 16px" },
++    legendItem: { display: "flex", alignItems: "center", gap: 6, fontFamily: "'Space Mono', monospace", fontSize: 11, color: theme.chalkDim },
++    legendSwatch: { width: 12, height: 12, borderRadius: 3, display: "inline-block" },
++    scoreRow: { display: "grid", gridTemplateColumns: "44px 1fr 1fr 50px", gap: 6, alignItems: "center", marginBottom: 6 },
++    scoreLabel: { fontFamily: "'Space Mono', monospace", fontSize: 12, fontWeight: 700, color: theme.muted },
++    scoreInput: { padding: "7px 8px", borderRadius: 6, border: `1.5px solid ${theme.panelBorder}`, fontSize: 13, background: theme.panelInput, color: theme.ink, minWidth: 0 },
++    smallBtn: { padding: "7px 10px", borderRadius: 6, border: "none", background: theme.bg, color: theme.chalk, fontSize: 11, fontWeight: 700, cursor: "pointer" },
++    smallGhostBtn: { padding: "7px 10px", borderRadius: 6, border: `1.5px solid ${theme.danger}`, background: "transparent", color: theme.danger, fontSize: 11, fontWeight: 700, cursor: "pointer" },
++    queueRow: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, padding: "8px 10px", background: theme.panelInput, borderRadius: 6, marginBottom: 6, border: `1px solid ${theme.panelBorder}` },
++    queueSquare: { fontFamily: "'Space Mono', monospace", fontSize: 12, fontWeight: 700, color: theme.pendingAccent, minWidth: 34 },
++    queueName: { fontSize: 13, fontWeight: 700, color: theme.ink, flex: 1 },
++    queueTime: { fontFamily: "'Space Mono', monospace", fontSize: 11, color: theme.muted },
++    winnerRow: { display: "grid", gridTemplateColumns: "44px 1fr auto", gap: 8, alignItems: "center", padding: "8px 10px", background: theme.panelInput, borderRadius: 6, marginBottom: 6, border: `1px solid ${theme.panelBorder}` },
++    winnerQ: { fontFamily: "'Space Mono', monospace", fontSize: 12, color: theme.muted, fontWeight: 700 },
++    winnerName: { fontSize: 13, fontWeight: 700, color: theme.ink },
++    winnerPayout: { fontFamily: "'Space Mono', monospace", fontSize: 13, fontWeight: 700, color: theme.bg },
++    priceRow: { display: "flex", alignItems: "center", gap: 6 },
++    priceSign: { fontFamily: "'Space Mono', monospace", fontSize: 15, fontWeight: 700, color: theme.muted },
++    potLine: { fontSize: 12, color: theme.muted, marginTop: 8 },
++    payoutBlock: { marginBottom: 10 },
++    payoutRow: { display: "grid", gridTemplateColumns: "36px 46px 60px 1fr", gap: 8, alignItems: "center", marginBottom: 4 },
++    payoutSubRow: { display: "flex", justifyContent: "space-between", fontFamily: "'Space Mono', monospace", fontSize: 11, color: theme.muted, paddingLeft: 10 },
++    payoutLabel: { fontFamily: "'Space Mono', monospace", fontSize: 12, fontWeight: 700, color: theme.muted },
++    payoutInput: { padding: "6px 8px", borderRadius: 6, border: `1.5px solid ${theme.panelBorder}`, fontSize: 13, background: theme.panelInput, color: theme.ink, minWidth: 0 },
++    payoutPct: { fontSize: 11, color: theme.muted },
++    payoutAmount: { fontFamily: "'Space Mono', monospace", fontSize: 12, fontWeight: 700, color: theme.bg, textAlign: "right" },
++    winnerBlock: { marginBottom: 8 },
++  };
++}
+diff --git a/lib/env.ts b/lib/env.ts
+new file mode 100644
+index 0000000..7be41ee
+--- /dev/null
++++ b/lib/env.ts
+@@ -0,0 +1,17 @@
++/**
++ * `process.env.X!` only silences TypeScript — it does nothing at runtime.
++ * If a required var is missing in Vercel's project settings, code that
++ * used `!` would silently send "undefined" as a header/body value instead
++ * of failing clearly. This throws a readable error naming exactly which
++ * var is missing, at the point of use, instead of a confusing downstream
++ * failure (e.g. Whop rejecting `Authorization: Bearer undefined`).
++ */
++export function requireEnv(name: string): string {
++  const value = process.env[name];
++  if (!value) {
++    throw new Error(
++      `Missing required environment variable "${name}". Set it in Vercel → Project → Settings → Environment Variables.`
++    );
++  }
++  return value;
++}
+diff --git a/lib/kv.ts b/lib/kv.ts
+index 48a8a95..38c8688 100644
+--- a/lib/kv.ts
++++ b/lib/kv.ts
+@@ -2,6 +2,23 @@ import { kv } from "@vercel/kv";
+ 
+ export type EntryType = "paid" | "free";
+ 
++/**
++ * Two independent 100-square pools, each with its own price, its own Whop
++ * plan, and its own set of KV keys — so claiming a square, drawing digits,
++ * or closing entries on one board never touches the other.
++ */
++export const BOARDS = ["silver", "gold"] as const;
++export type Board = (typeof BOARDS)[number];
++
++export function isBoard(value: unknown): value is Board {
++  return typeof value === "string" && (BOARDS as readonly string[]).includes(value);
++}
++
++export const BOARD_CONFIG: Record<Board, { label: string; price: number; planEnvVar: string }> = {
++  silver: { label: "Silver Board", price: 10, planEnvVar: "WHOP_PLAN_ID_SILVER" },
++  gold: { label: "Gold Board", price: 20, planEnvVar: "WHOP_PLAN_ID_GOLD" },
++};
++
+ export interface SquareRecord {
+   id: number; // 0-99
+   status: "open" | "pending" | "locked";
+@@ -13,17 +30,18 @@ export interface SquareRecord {
+   pendingExpiresAt?: string;
+ }
+ 
+-const SQUARE_KEY = (id: number) => `square:${id}`;
++const SQUARE_KEY = (board: Board, id: number) => `square:${board}:${id}`;
++const DIGITS_KEY = (board: Board) => `board:${board}:digits`;
+ const PENDING_TTL_SECONDS = 10 * 60; // 10 min hold while user is on Whop checkout
+ 
+-export async function getAllSquares(): Promise<SquareRecord[]> {
+-  const keys = Array.from({ length: 100 }, (_, i) => SQUARE_KEY(i));
++export async function getAllSquares(board: Board): Promise<SquareRecord[]> {
++  const keys = Array.from({ length: 100 }, (_, i) => SQUARE_KEY(board, i));
+   const results = await kv.mget<SquareRecord[]>(...keys);
+   return results.map((r, i) => r ?? { id: i, status: "open" });
+ }
+ 
+-export async function getSquare(id: number): Promise<SquareRecord> {
+-  const rec = await kv.get<SquareRecord>(SQUARE_KEY(id));
++export async function getSquare(board: Board, id: number): Promise<SquareRecord> {
++  const rec = await kv.get<SquareRecord>(SQUARE_KEY(board, id));
+   return rec ?? { id, status: "open" };
+ }
+ 
+@@ -31,15 +49,32 @@ export async function getSquare(id: number): Promise<SquareRecord> {
+  * Atomically place a temporary hold on a square while the buyer completes
+  * Whop checkout. Prevents two people from paying for the same square.
+  * Returns false if the square is already pending/locked.
++ *
++ * This is a Redis-side compare-and-set (via EVAL) rather than a
++ * check-then-set from application code, so two concurrent requests for the
++ * same square can't both pass the "is it open" check before either writes —
++ * only one caller can ever win the hold for a given square.
+  */
++const HOLD_SCRIPT = `
++  local cur = redis.call("GET", KEYS[1])
++  if cur == false then
++    redis.call("SET", KEYS[1], ARGV[1], "EX", ARGV[2])
++    return 1
++  end
++  local ok, rec = pcall(cjson.decode, cur)
++  if ok and rec.status == "open" then
++    redis.call("SET", KEYS[1], ARGV[1], "EX", ARGV[2])
++    return 1
++  end
++  return 0
++`;
++
+ export async function holdSquare(
++  board: Board,
+   id: number,
+   ownerName: string,
+   ownerEmail: string
+ ): Promise<boolean> {
+-  const existing = await getSquare(id);
+-  if (existing.status !== "open") return false;
+-
+   const record: SquareRecord = {
+     id,
+     status: "pending",
+@@ -47,21 +82,23 @@ export async function holdSquare(
+     ownerEmail,
+     pendingExpiresAt: new Date(Date.now() + PENDING_TTL_SECONDS * 1000).toISOString(),
+   };
+-  // NX-style guard: only set if still absent/open. For true atomicity under
+-  // heavy concurrency, wrap this in kv.set with a Lua/transaction; low-traffic
+-  // squares boards are fine with this check-then-set.
+-  await kv.set(SQUARE_KEY(id), record, { ex: PENDING_TTL_SECONDS });
+-  return true;
++  const result = await kv.eval<[string, number], number>(
++    HOLD_SCRIPT,
++    [SQUARE_KEY(board, id)],
++    [JSON.stringify(record), PENDING_TTL_SECONDS]
++  );
++  return result === 1;
+ }
+ 
+-export async function releaseSquare(id: number): Promise<void> {
+-  const existing = await getSquare(id);
++export async function releaseSquare(board: Board, id: number): Promise<void> {
++  const existing = await getSquare(board, id);
+   if (existing.status === "pending") {
+-    await kv.set(SQUARE_KEY(id), { id, status: "open" });
++    await kv.set(SQUARE_KEY(board, id), { id, status: "open" });
+   }
+ }
+ 
+ export async function lockSquare(
++  board: Board,
+   id: number,
+   entryType: EntryType,
+   ownerName: string,
+@@ -77,16 +114,16 @@ export async function lockSquare(
+     whopPaymentId,
+     claimedAt: new Date().toISOString(),
+   };
+-  await kv.set(SQUARE_KEY(id), record);
++  await kv.set(SQUARE_KEY(board, id), record);
+ }
+ 
+-// --- Digit randomization (run once, at kickoff, by an admin) ---
++// --- Digit randomization (run once per board, at kickoff, by an admin) ---
+ 
+-export async function getDigits(): Promise<{ rows: number[]; cols: number[] } | null> {
+-  return (await kv.get("board:digits")) ?? null;
++export async function getDigits(board: Board): Promise<{ rows: number[]; cols: number[] } | null> {
++  return (await kv.get(DIGITS_KEY(board))) ?? null;
+ }
+ 
+-export async function randomizeDigits(): Promise<{ rows: number[]; cols: number[] }> {
++export async function randomizeDigits(board: Board): Promise<{ rows: number[]; cols: number[] }> {
+   const shuffle = (arr: number[]) => {
+     const a = [...arr];
+     for (let i = a.length - 1; i > 0; i--) {
+@@ -96,6 +133,198 @@ export async function randomizeDigits(): Promise<{ rows: number[]; cols: number[
+     return a;
+   };
+   const digits = { rows: shuffle([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), cols: shuffle([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]) };
+-  await kv.set("board:digits", digits);
++  await kv.set(DIGITS_KEY(board), digits);
+   return digits;
+ }
++
++// --- Entry-window guard: block new entries once digits are drawn ---
++
++export async function entriesAreOpen(board: Board): Promise<boolean> {
++  const digits = await getDigits(board);
++  return digits === null;
++}
++
++// --- Simple fixed-window rate limiter (per key, e.g. per email) ---
++
++/**
++ * Returns true if the caller is under the limit (and counts this call
++ * against it), false if they've hit the limit for the current window.
++ */
++export async function checkRateLimit(
++  key: string,
++  maxRequests: number,
++  windowSeconds: number
++): Promise<boolean> {
++  const rlKey = `ratelimit:${key}`;
++  const count = await kv.incr(rlKey);
++  if (count === 1) {
++    await kv.expire(rlKey, windowSeconds);
++  }
++  return count <= maxRequests;
++}
++
++// --- AMOE: one free entry per email address, per board ---
++
++/**
++ * Reserves the given email for a free entry on the given board. Returns
++ * true the first time it's called for a given email+board pair, false on
++ * any repeat — so the same person can't submit the free form multiple
++ * times to stack extra squares on the same board. (A person CAN still
++ * enter both boards once each — silver and gold are independent pools.)
++ */
++export async function claimAmoeEmail(board: Board, email: string): Promise<boolean> {
++  const key = `amoe:claimed:${board}:${email.toLowerCase().trim()}`;
++  const result = await kv.set(key, true, { nx: true });
++  return result !== null;
++}
++
++// --- Admin: direct square assign/release (e.g. cash payment, stuck hold) ---
++
++export async function adminAssignSquare(board: Board, id: number, name: string): Promise<void> {
++  await lockSquare(board, id, "paid", name, "", undefined);
++}
++
++export async function adminReleaseSquare(board: Board, id: number): Promise<void> {
++  await kv.set(SQUARE_KEY(board, id), { id, status: "open" });
++}
++
++// --- Board config: team names, house cut, forward/backward split ---
++
++export interface BoardSettings {
++  homeTeam: string;
++  awayTeam: string;
++  housePct: number; // % of the pot the house keeps before payouts
++  forwardPct: number; // of each quarter's net payout, forward winner's share
++  payoutSplit: { Q1: number; Q2: number; Q3: number; Q4: number; F: number }; // % of net pool, per quarter
++}
++
++const CONFIG_KEY = (board: Board) => `config:${board}`;
++
++const DEFAULT_SETTINGS: BoardSettings = {
++  homeTeam: "HOME",
++  awayTeam: "AWAY",
++  housePct: 20,
++  forwardPct: 62.5,
++  payoutSplit: { Q1: 25, Q2: 25, Q3: 25, Q4: 25, F: 0 },
++};
++
++export async function getBoardSettings(board: Board): Promise<BoardSettings> {
++  const stored = await kv.get<BoardSettings>(CONFIG_KEY(board));
++  return { ...DEFAULT_SETTINGS, ...stored };
++}
++
++export async function updateBoardSettings(
++  board: Board,
++  patch: Partial<BoardSettings>
++): Promise<BoardSettings> {
++  const current = await getBoardSettings(board);
++  const next: BoardSettings = {
++    ...current,
++    ...patch,
++    payoutSplit: { ...current.payoutSplit, ...(patch.payoutSplit ?? {}) },
++  };
++  await kv.set(CONFIG_KEY(board), next);
++  return next;
++}
++
++// --- Quarters: scores + computed winners, per board ---
++
++export type QuarterKey = "Q1" | "Q2" | "Q3" | "Q4" | "F";
++export const QUARTER_KEYS: QuarterKey[] = ["Q1", "Q2", "Q3", "Q4", "F"];
++
++export interface WinnerResult {
++  forward: { rowIdx: number; colIdx: number; name: string };
++  backward: { rowIdx: number; colIdx: number; name: string };
++}
++
++export interface QuarterState {
++  home: string;
++  away: string;
++  winner: WinnerResult | null;
++}
++
++export type QuartersState = Record<QuarterKey, QuarterState>;
++
++const QUARTERS_KEY = (board: Board) => `quarters:${board}`;
++
++const EMPTY_QUARTERS: QuartersState = {
++  Q1: { home: "", away: "", winner: null },
++  Q2: { home: "", away: "", winner: null },
++  Q3: { home: "", away: "", winner: null },
++  Q4: { home: "", away: "", winner: null },
++  F: { home: "", away: "", winner: null },
++};
++
++export async function getQuarters(board: Board): Promise<QuartersState> {
++  const stored = await kv.get<QuartersState>(QUARTERS_KEY(board));
++  return stored ?? EMPTY_QUARTERS;
++}
++
++export async function updateQuarterScore(
++  board: Board,
++  quarter: QuarterKey,
++  side: "home" | "away",
++  value: string
++): Promise<QuartersState> {
++  const current = await getQuarters(board);
++  const next: QuartersState = {
++    ...current,
++    [quarter]: { ...current[quarter], [side]: value.replace(/[^0-9]/g, "") },
++  };
++  await kv.set(QUARTERS_KEY(board), next);
++  return next;
++}
++
++/**
++ * Computes the forward/backward winning square for a quarter from its
++ * scores and the board's drawn digits, then persists the result. Mirrors
++ * the scoring rule from the original artifact: the home team's last digit
++ * picks the row (forward) or column (backward); the away team's last digit
++ * picks the column (forward) or row (backward).
++ */
++export async function computeAndSaveWinner(
++  board: Board,
++  quarter: QuarterKey
++): Promise<QuartersState> {
++  const [digits, squares, quarters] = await Promise.all([
++    getDigits(board),
++    getAllSquares(board),
++    getQuarters(board),
++  ]);
++
++  const q = quarters[quarter];
++  if (!digits || q.home === "" || q.away === "") {
++    return quarters;
++  }
++
++  const hDigit = Number(q.home.slice(-1));
++  const aDigit = Number(q.away.slice(-1));
++  const fwdRow = digits.rows.indexOf(hDigit);
++  const fwdCol = digits.cols.indexOf(aDigit);
++  const backRow = digits.rows.indexOf(aDigit);
++  const backCol = digits.cols.indexOf(hDigit);
++
++  if (fwdRow === -1 || fwdCol === -1 || backRow === -1 || backCol === -1) {
++    return quarters;
++  }
++
++  const nameAt = (r: number, c: number) => squares[r * 10 + c]?.ownerName || "Unclaimed square";
++
++  const winner: WinnerResult = {
++    forward: { rowIdx: fwdRow, colIdx: fwdCol, name: nameAt(fwdRow, fwdCol) },
++    backward: { rowIdx: backRow, colIdx: backCol, name: nameAt(backRow, backCol) },
++  };
++
++  const next: QuartersState = { ...quarters, [quarter]: { ...q, winner } };
++  await kv.set(QUARTERS_KEY(board), next);
++  return next;
++}
++
++// --- Full board reset (squares, digits, quarters — keeps settings/pin) ---
++
++export async function resetBoard(board: Board): Promise<void> {
++  const keys = Array.from({ length: 100 }, (_, i) => SQUARE_KEY(board, i));
++  await Promise.all(keys.map((k) => kv.del(k)));
++  await kv.del(DIGITS_KEY(board));
++  await kv.del(QUARTERS_KEY(board));
++}
+diff --git a/package.json b/package.json
+index f2acd6c..ced6d52 100644
+--- a/package.json
++++ b/package.json
+@@ -12,5 +12,10 @@
+     "next": "14.2.35",
+     "react": "^18.3.1",
+     "react-dom": "^18.3.1"
++  },
++  "devDependencies": {
++    "typescript": "^5.4.5",
++    "@types/node": "^20.14.9",
++    "@types/react": "^18.3.3"
+   }
+ }
+diff --git a/public/logo.webp b/public/logo.webp
+new file mode 100644
+index 0000000000000000000000000000000000000000..eccdf746c958843bfc795e9a20e990967bfe2944
+GIT binary patch
+literal 31614
+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
+N9!-b<00000003{WyF&l~
+
+literal 0
+HcmV?d00001
+
+diff --git a/public/mascot.webp b/public/mascot.webp
+new file mode 100644
+index 0000000000000000000000000000000000000000..e2e662e2939bdf1ddbd393353c9108ebd2b0cd58
+GIT binary patch
+literal 6786
+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
+
+literal 0
+HcmV?d00001
+
+diff --git a/tsconfig.json b/tsconfig.json
+index c52c3fc..6fb4216 100644
+--- a/tsconfig.json
++++ b/tsconfig.json
+@@ -1,7 +1,11 @@
+ {
+   "compilerOptions": {
+     "target": "es2017",
+-    "lib": ["dom", "dom.iterable", "esnext"],
++    "lib": [
++      "dom",
++      "dom.iterable",
++      "esnext"
++    ],
+     "allowJs": true,
+     "skipLibCheck": true,
+     "strict": true,
+@@ -13,9 +17,19 @@
+     "isolatedModules": true,
+     "jsx": "preserve",
+     "incremental": true,
+-    "baseUrl": ".",
+-    "paths": { "@/*": ["./*"] }
++    "plugins": [
++      {
++        "name": "next"
++      }
++    ]
+   },
+-  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
+-  "exclude": ["node_modules"]
+-}
++  "include": [
++    "next-env.d.ts",
++    "**/*.ts",
++    "**/*.tsx",
++    ".next/types/**/*.ts"
++  ],
++  "exclude": [
++    "node_modules"
++  ]
++}
+\ No newline at end of file

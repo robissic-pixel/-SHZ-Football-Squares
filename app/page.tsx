@@ -303,16 +303,33 @@ function BoardPanel({ boardKey, theme }: { boardKey: BoardKey; theme: Theme }) {
     return data;
   };
 
-  const submitPin = () => {
-    // We don't have a way to verify the secret without hitting an admin
-    // route, so we optimistically unlock and let the first admin action
-    // fail with "Unauthorized" if it was wrong.
-    setAdminSecret(secretInput);
-    setIsAdmin(true);
-    setShowPinModal(false);
-    setSecretInput("");
+  const [verifyingPin, setVerifyingPin] = useState(false);
+
+  const submitPin = async () => {
+    const candidate = secretInput;
+    setVerifyingPin(true);
     setSecretError("");
-    showToast("Admin unlocked — actions will fail if the secret is wrong.");
+    try {
+      const res = await fetch("/api/admin/verify", {
+        method: "POST",
+        headers: { "x-admin-secret": candidate },
+      });
+      if (!res.ok) {
+        setSecretError("Incorrect admin secret.");
+        setVerifyingPin(false);
+        return;
+      }
+      setAdminSecret(candidate);
+      setIsAdmin(true);
+      setShowPinModal(false);
+      setSecretInput("");
+      setSecretError("");
+      showToast("Admin unlocked.");
+    } catch {
+      setSecretError("Could not verify right now — check your connection and try again.");
+    } finally {
+      setVerifyingPin(false);
+    }
   };
 
   const cellKey = (r: number, c: number) => `${r}-${c}`;
@@ -573,11 +590,11 @@ function BoardPanel({ boardKey, theme }: { boardKey: BoardKey; theme: Theme }) {
                 setSecretInput(e.target.value);
                 setSecretError("");
               }}
-              onKeyDown={(e) => e.key === "Enter" && submitPin()}
+              onKeyDown={(e) => e.key === "Enter" && !verifyingPin && submitPin()}
             />
             {secretError && <div style={styles.errorBox}>{secretError}</div>}
-            <button style={{ ...styles.primaryBtn, marginTop: 12 }} onClick={submitPin}>
-              Unlock
+            <button style={{ ...styles.primaryBtn, marginTop: 12, opacity: verifyingPin ? 0.6 : 1 }} onClick={submitPin} disabled={verifyingPin}>
+              {verifyingPin ? "Checking…" : "Unlock"}
             </button>
             <button
               style={{ ...styles.ghostBtn, marginTop: 8 }}
@@ -750,17 +767,33 @@ function BoardPanel({ boardKey, theme }: { boardKey: BoardKey; theme: Theme }) {
 
       {/* Board — styled as a football field */}
       <section style={styles.boardWrap}>
-        <div style={styles.endzoneTop}>
-          <img src="/mascot.webp" alt="" style={styles.endzoneMascot} />
-          <span style={styles.endzoneWordmark}>SWINEHEADZ</span>
-          <span style={styles.endzoneTag}>{meta.label.toUpperCase()}</span>
-        </div>
-
         <div style={styles.turfField}>
-          <div style={styles.turfYardlines} aria-hidden="true" />
+          <div style={styles.headerPillWrap}>
+            <div style={styles.headerPill}>
+              <img src="/mascot.webp" alt="" style={styles.headerPillMascot} />
+              <span style={styles.headerPillWordmark}>SWINEHEADZ</span>
+              <span style={styles.headerPillTag}>{meta.label.toUpperCase()}</span>
+            </div>
+          </div>
+
           <HogPlayer theme={theme} corner="bl" pose="run" />
           <HogPlayer theme={theme} corner="tr" pose="block" />
           <HogPlayer theme={theme} corner="br" pose="reach" />
+
+          <div style={styles.yardRail("left")} aria-hidden="true">
+            {["GOAL", "10", "20", "30", "40", "50", "40", "30", "20", "10", "GOAL"].map((v, i) => (
+              <span key={i} style={styles.yardRailLabel}>
+                {v}
+              </span>
+            ))}
+          </div>
+          <div style={styles.yardRail("right")} aria-hidden="true">
+            {["GOAL", "10", "20", "30", "40", "50", "40", "30", "20", "10", "GOAL"].map((v, i) => (
+              <span key={i} style={styles.yardRailLabel}>
+                {v}
+              </span>
+            ))}
+          </div>
 
           <div style={styles.boardScroll}>
             <div style={styles.axisAwayLabel}>{settings.awayTeam} →</div>
@@ -822,7 +855,13 @@ function BoardPanel({ boardKey, theme }: { boardKey: BoardKey; theme: Theme }) {
                             title={sq?.status === "locked" ? sq.ownerName : sq?.status === "pending" ? "Pending checkout" : "Open square"}
                           >
                             <span style={styles.cellNumber}>{id + 1}</span>
-                            {sq?.status === "locked" && sq.ownerName ? initials(sq.ownerName) : sq?.status === "pending" ? "…" : ""}
+                            {sq?.status === "locked" && sq.ownerName ? (
+                              <span style={styles.cellName}>{sq.ownerName.length > 9 ? initials(sq.ownerName) : sq.ownerName}</span>
+                            ) : sq?.status === "pending" ? (
+                              "…"
+                            ) : (
+                              ""
+                            )}
                           </button>
                         </div>
                       );
@@ -832,12 +871,13 @@ function BoardPanel({ boardKey, theme }: { boardKey: BoardKey; theme: Theme }) {
               </div>
             </div>
           </div>
-        </div>
 
-        <div style={styles.endzoneBottom}>
-          <span style={styles.endzoneWordmark}>NETWORK</span>
-          <span style={styles.endzoneTag}>EST. GAME DAY</span>
-          <img src="/mascot.webp" alt="" style={styles.endzoneMascot} />
+          <div style={styles.endzoneBottomText}>
+            <span style={styles.endzoneBottomLabel}>GOAL</span>
+            <span style={styles.endzoneBottomWordmark}>NETWORK</span>
+            <span style={styles.endzoneBottomTag}>EST. GAME DAY</span>
+            <span style={styles.endzoneBottomLabel}>GOAL</span>
+          </div>
         </div>
 
         <div style={styles.legendRow}>
@@ -987,43 +1027,27 @@ export default function SwineheadzSquaresApp() {
     <div style={{ ...outerStyles.page, background: pageTurfBackground(theme) }}>
       <style>{fontImport + keyframes}</style>
 
+      <div style={outerStyles.cornerTabRow}>
+        {(Object.keys(BOARD_META) as BoardKey[]).map((key) => {
+          const t = THEMES[key];
+          const active = key === activeKey;
+          const m = BOARD_META[key];
+          return (
+            <button key={key} onClick={() => setActiveKey(key)} style={outerStyles.cornerTab(t, active)}>
+              <span style={outerStyles.cornerTabLabel}>{m.label}</span>
+              <span style={outerStyles.cornerTabSub}>${m.price} / square</span>
+            </button>
+          );
+        })}
+      </div>
+
       <header style={outerStyles.header}>
         <img src="/logo.webp" alt="Swineheadz Network" style={outerStyles.logo} />
         <h1 style={outerStyles.title}>
           <span style={{ ...outerStyles.titleStitch, borderBottomColor: theme.accent }}>SWINEHEADZ SQUARES</span>
         </h1>
         <p style={outerStyles.subtitle}>SWINEHEADZ NETWORK · 100 SQUARES · WINNER EVERY QUARTER</p>
-
-        <div style={outerStyles.tabRow}>
-          {(Object.keys(BOARD_META) as BoardKey[]).map((key) => {
-            const t = THEMES[key];
-            const active = key === activeKey;
-            const m = BOARD_META[key];
-            return (
-              <button
-                key={key}
-                onClick={() => setActiveKey(key)}
-                style={{
-                  ...outerStyles.tabBtn,
-                  borderColor: active ? t.accent : "rgba(255,255,255,0.25)",
-                  background: active ? t.accentSoft : "rgba(0,0,0,0.2)",
-                  color: active ? t.accent : "#E4E7EA",
-                }}
-              >
-                <span style={outerStyles.tabDot(t.accent, active)} />
-                <span style={outerStyles.tabLabel}>{m.label}</span>
-                <span style={outerStyles.tabSub}>${m.price} / square</span>
-              </button>
-            );
-          })}
-        </div>
       </header>
-
-      <div style={outerStyles.yardTicker(theme)} aria-hidden="true">
-        <div style={outerStyles.yardTickerTrack}>
-          {"GOAL · 10 · 20 · 30 · 40 · 50 · 40 · 30 · 20 · 10 · GOAL · 10 · 20 · 30 · 40 · 50 · 40 · 30 · 20 · 10 · GOAL ".repeat(2)}
-        </div>
-      </div>
 
       <main style={outerStyles.main}>
         <BoardPanel key={activeKey} boardKey={activeKey} theme={theme} />
@@ -1051,13 +1075,26 @@ const outerStyles: any = {
   title: { fontFamily: "'Anton', sans-serif", fontSize: "clamp(30px, 8vw, 52px)", letterSpacing: "0.03em", margin: "10px 0 0", color: "#F3EEDF" },
   titleStitch: { borderBottom: "3px dashed", paddingBottom: 4 },
   subtitle: { fontFamily: "'Space Mono', monospace", fontSize: 12, color: "#9aa4ac", marginTop: 10, letterSpacing: "0.04em" },
-  tabRow: { display: "flex", justifyContent: "center", gap: 10, marginTop: 20, flexWrap: "wrap" },
-  tabBtn: { display: "flex", flexDirection: "column", alignItems: "center", gap: 2, padding: "10px 20px", borderRadius: 10, border: "1.5px solid", cursor: "pointer", fontFamily: "'Space Mono', monospace", transition: "all 0.15s ease-out" },
-  tabLabel: { fontSize: 13, fontWeight: 700, letterSpacing: "0.03em" },
-  tabSub: { fontSize: 10, opacity: 0.8 },
-  tabDot: (color: string, active: boolean) => ({ width: 7, height: 7, borderRadius: "50%", background: active ? color : "transparent", border: `1.5px solid ${color}`, marginBottom: 2 }),
-  yardTicker: (theme: Theme) => ({ marginTop: 24, padding: "10px 0", overflow: "hidden", whiteSpace: "nowrap", background: "rgba(0,0,0,0.28)", borderTop: `2px solid ${theme.accentSoftBorder}`, borderBottom: `2px solid ${theme.accentSoftBorder}` }),
-  yardTickerTrack: { display: "inline-block", fontFamily: "'Space Mono', monospace", fontSize: 13, fontWeight: 700, letterSpacing: "0.15em", color: "rgba(255,255,255,0.35)" },
+  cornerTabRow: { display: "flex", justifyContent: "space-between", maxWidth: 1000, margin: "0 auto", padding: "20px 16px 0", gap: 12 },
+  cornerTab: (t: Theme, active: boolean) => ({
+    display: "flex",
+    flexDirection: "column" as const,
+    alignItems: "flex-start" as const,
+    gap: 1,
+    padding: "10px 16px",
+    borderRadius: 8,
+    border: `1.5px solid ${active ? t.accent : "rgba(255,255,255,0.25)"}`,
+    cursor: "pointer",
+    fontFamily: "'Space Mono', monospace",
+    background: active
+      ? `linear-gradient(155deg, ${t.accent} 0%, ${t.bg} 55%, ${t.accent} 100%)`
+      : "rgba(20,22,25,0.55)",
+    color: active ? t.ink : "#C7CCD2",
+    boxShadow: active ? "0 4px 12px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.4)" : "none",
+    transition: "all 0.15s ease-out",
+  }),
+  cornerTabLabel: { fontSize: 12, fontWeight: 700, letterSpacing: "0.03em" },
+  cornerTabSub: { fontSize: 10, opacity: 0.85 },
   main: { maxWidth: 1100, margin: "24px auto 0", padding: "0 16px" },
 };
 
@@ -1084,18 +1121,66 @@ function getStyles(theme: Theme): any {
     dangerBtn: { marginTop: 20, width: "100%", padding: "9px 12px", borderRadius: 8, border: `1.5px solid ${theme.danger}`, background: "transparent", color: theme.danger, fontWeight: 600, fontSize: 12, cursor: "pointer" },
     errorBox: { marginTop: 12, fontSize: 12, color: theme.danger, fontFamily: "'Space Mono', monospace" },
     boardWrap: { background: theme.bgDark, borderRadius: 14, overflow: "hidden", boxShadow: `0 10px 28px rgba(0,0,0,0.4), inset 0 0 0 1px ${theme.accentSoftBorder}` },
-    endzoneTop: { display: "flex", alignItems: "center", justifyContent: "center", gap: 10, background: `linear-gradient(90deg, ${theme.bgDark}, ${theme.bg}, ${theme.bgDark})`, padding: "9px 14px", borderBottom: `3px solid ${theme.accent}` },
-    endzoneBottom: { display: "flex", alignItems: "center", justifyContent: "center", gap: 10, background: `linear-gradient(90deg, ${theme.bgDark}, ${theme.bg}, ${theme.bgDark})`, padding: "9px 14px", borderTop: `3px solid ${theme.accent}` },
-    endzoneMascot: { width: 32, height: 32, objectFit: "contain", borderRadius: 6, background: "#EDEDED", padding: 2, boxShadow: `0 0 0 1.5px ${theme.accent}` },
-    endzoneWordmark: { fontFamily: "'Anton', sans-serif", fontSize: 19, letterSpacing: "0.06em", color: theme.accent, fontStyle: "italic", transform: "skewX(-6deg)" },
-    endzoneTag: { fontFamily: "'Space Mono', monospace", fontSize: 10, letterSpacing: "0.1em", color: theme.chalkDim },
-    turfField: { position: "relative", overflow: "hidden", padding: "20px 10px 12px", background: `repeating-linear-gradient(90deg, rgba(255,255,255,0.045) 0px, rgba(255,255,255,0.045) 2px, transparent 2px, transparent 42px), repeating-linear-gradient(180deg, rgba(255,255,255,0.05) 0px, rgba(255,255,255,0.05) 60px, transparent 60px, transparent 120px), linear-gradient(180deg, #1F4D2B 0%, #16371F 100%)`, boxShadow: "inset 0 0 46px rgba(0,0,0,0.5)" },
-    turfYardlines: { position: "absolute", inset: 0, pointerEvents: "none" },
-    boardScroll: { position: "relative", zIndex: 2, overflowX: "auto", paddingBottom: 4, paddingTop: 48, marginTop: -48 },
+    headerPillWrap: { display: "flex", justifyContent: "center", paddingTop: 14, position: "relative", zIndex: 3 },
+    headerPill: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      padding: "7px 18px 7px 8px",
+      borderRadius: 999,
+      background: `linear-gradient(155deg, ${theme.accent} 0%, ${theme.bg} 55%, ${theme.accent} 100%)`,
+      boxShadow: "0 6px 16px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.4)",
+      border: `1px solid ${theme.accentSoftBorder}`,
+    },
+    headerPillMascot: { width: 24, height: 24, objectFit: "contain", borderRadius: "50%", background: "#EDEDED", padding: 2, boxShadow: `0 0 0 1.5px ${theme.ink}` },
+    headerPillWordmark: { fontFamily: "'Anton', sans-serif", fontSize: 15, letterSpacing: "0.04em", color: theme.ink, fontStyle: "italic" },
+    headerPillTag: { fontFamily: "'Space Mono', monospace", fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", color: theme.ink, opacity: 0.75 },
+    turfField: {
+      position: "relative",
+      overflow: "hidden",
+      padding: "8px 34px 30px",
+      background: `repeating-linear-gradient(90deg, rgba(255,255,255,0.045) 0px, rgba(255,255,255,0.045) 2px, transparent 2px, transparent 42px), repeating-linear-gradient(180deg, rgba(255,255,255,0.05) 0px, rgba(255,255,255,0.05) 60px, transparent 60px, transparent 120px), linear-gradient(180deg, #1F4D2B 0%, #16371F 100%)`,
+      boxShadow: "inset 0 0 46px rgba(0,0,0,0.5)",
+    },
+    yardRail: (side: "left" | "right") => ({
+      position: "absolute" as const,
+      top: 70,
+      bottom: 46,
+      [side]: 8,
+      width: 20,
+      display: "flex",
+      flexDirection: "column" as const,
+      justifyContent: "space-between" as const,
+      alignItems: "center" as const,
+      zIndex: 1,
+    }),
+    yardRailLabel: {
+      fontFamily: "'Space Mono', monospace",
+      fontSize: 9,
+      fontWeight: 700,
+      letterSpacing: "0.05em",
+      color: theme.accent,
+      opacity: 0.75,
+      writingMode: "vertical-rl" as const,
+      transform: "rotate(180deg)",
+      textShadow: "0 1px 2px rgba(0,0,0,0.6)",
+    },
+    boardScroll: { position: "relative", zIndex: 2, overflowX: "auto", paddingBottom: 4, paddingTop: 20 },
     axisAwayLabel: { fontFamily: "'Space Mono', monospace", fontSize: 12, color: theme.accent, marginBottom: 6, marginLeft: 44, textShadow: "0 1px 3px rgba(0,0,0,0.8)" },
-    boardGridOuter: { display: "flex", gap: 10, minWidth: 640 },
+    boardGridOuter: { display: "flex", gap: 10, minWidth: 560 },
     gridPlate: { background: "rgba(0,0,0,0.4)", borderRadius: 10, padding: 8, boxShadow: `inset 0 0 0 1px ${theme.accentSofter}` },
     axisHomeLabel: { writingMode: "vertical-rl", transform: "rotate(180deg)", fontFamily: "'Space Mono', monospace", fontSize: 13, color: theme.accent, display: "flex", alignItems: "center" },
+    endzoneBottomText: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 10,
+      marginTop: 14,
+      fontFamily: "'Space Mono', monospace",
+    },
+    endzoneBottomLabel: { fontSize: 11, fontWeight: 700, letterSpacing: "0.15em", color: theme.accent, opacity: 0.8 },
+    endzoneBottomWordmark: { fontFamily: "'Anton', sans-serif", fontSize: 16, letterSpacing: "0.05em", color: theme.chalk, fontStyle: "italic" },
+    endzoneBottomTag: { fontSize: 10, letterSpacing: "0.08em", color: theme.chalkDim },
     headerRow: { display: "flex" },
     bodyRow: { display: "flex" },
     cornerCell: { width: 44, height: 44, flexShrink: 0 },
@@ -1105,13 +1190,30 @@ function getStyles(theme: Theme): any {
     revealBubble: { position: "absolute", bottom: "calc(100% + 8px)", left: "50%", transform: "translateX(-50%)", background: theme.ink, border: `1.5px solid ${theme.accent}`, borderRadius: 8, padding: "8px 12px", whiteSpace: "nowrap", zIndex: 30, textAlign: "center", boxShadow: "0 8px 20px rgba(0,0,0,0.5)", animation: "popIn 0.15s ease-out", pointerEvents: "none" },
     revealName: { display: "block", fontFamily: "'Anton', sans-serif", fontSize: 19, letterSpacing: "0.02em", color: theme.chalk },
     revealHint: { display: "block", fontFamily: "'Space Mono', monospace", fontSize: 9, color: theme.accent, marginTop: 2 },
-    cell: { width: 46, height: 46, flexShrink: 0, margin: 1, borderRadius: 6, border: `1px solid ${theme.accentSofter}`, background: theme.accentSofter, color: theme.chalk, fontSize: 13, fontFamily: "'Space Mono', monospace", fontWeight: 700, cursor: "pointer", padding: 0, position: "relative", transition: "transform 0.15s ease-out, box-shadow 0.15s ease-out" },
-    cellNumber: { position: "absolute", top: 2, left: 3, fontSize: 8, fontWeight: 400, opacity: 0.55, lineHeight: 1 },
-    cellFilled: { background: theme.accentSoft, border: `1px solid ${theme.accentSoftBorder}` },
-    cellMine: { background: theme.mineSoft, border: `1px solid ${theme.accent}` },
-    cellPending: { background: theme.pendingSoft, border: `1px dashed ${theme.pendingAccent}` },
-    cellWinnerForward: { background: theme.danger, border: `1px solid ${theme.winnerForwardBorder}`, color: theme.winnerForwardText },
-    cellWinnerBackward: { background: theme.accent, border: `1px solid ${theme.winnerBackwardBorder}`, color: theme.winnerBackwardText },
+    cell: {
+      width: 46,
+      height: 46,
+      flexShrink: 0,
+      margin: 1,
+      borderRadius: 6,
+      border: "1.5px solid rgba(20,20,20,0.85)",
+      background: "#F4F2EA",
+      color: "#15171A",
+      fontSize: 15,
+      fontFamily: "'Space Mono', monospace",
+      fontWeight: 700,
+      cursor: "pointer",
+      padding: 0,
+      position: "relative",
+      transition: "transform 0.15s ease-out, box-shadow 0.15s ease-out",
+    },
+    cellNumber: { position: "absolute", top: 2, left: 3, fontSize: 8, fontWeight: 400, opacity: 0.5, lineHeight: 1 },
+    cellName: { fontSize: 9, fontWeight: 700, lineHeight: 1.1, padding: "0 3px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%", display: "block" },
+    cellFilled: { background: "#FFFFFF", border: `2px solid ${theme.ink}` },
+    cellMine: { background: theme.mineSoft, border: `2px solid ${theme.accent}` },
+    cellPending: { background: theme.pendingSoft, border: `1.5px dashed ${theme.pendingAccent}`, color: "#EFEFEF" },
+    cellWinnerForward: { background: theme.danger, border: `2px solid ${theme.winnerForwardBorder}`, color: theme.winnerForwardText },
+    cellWinnerBackward: { background: theme.accent, border: `2px solid ${theme.winnerBackwardBorder}`, color: theme.winnerBackwardText },
     legendRow: { display: "flex", flexWrap: "wrap", gap: 14, padding: "12px 16px 16px" },
     legendItem: { display: "flex", alignItems: "center", gap: 6, fontFamily: "'Space Mono', monospace", fontSize: 11, color: theme.chalkDim },
     legendSwatch: { width: 12, height: 12, borderRadius: 3, display: "inline-block" },
