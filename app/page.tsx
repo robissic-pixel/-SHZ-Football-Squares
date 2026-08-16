@@ -867,8 +867,8 @@ function BoardPanel({ boardKey, theme }: { boardKey: BoardKey; theme: Theme }) {
           <div style={styles.boardScroll}>
             <div style={styles.axisAwayLabel}>{settings.awayTeam} →</div>
             <div style={styles.boardGridOuter}>
-              <div style={styles.axisHomeLabel}>
-                <span>{settings.homeTeam} ↓</span>
+              <div style={styles.axisHomeLabelWrap}>
+                <span style={styles.axisHomeLabelText}>{settings.homeTeam} ↓</span>
               </div>
               <div style={styles.gridPlate}>
                 <div style={styles.headerRow}>
@@ -923,13 +923,12 @@ function BoardPanel({ boardKey, theme }: { boardKey: BoardKey; theme: Theme }) {
                             onClick={() => handleCellTap(r, c)}
                             title={sq?.status === "locked" ? sq.ownerName : sq?.status === "pending" ? "Pending checkout" : "Open square"}
                           >
-                            <span style={styles.cellNumber}>{id + 1}</span>
                             {sq?.status === "locked" && sq.ownerName ? (
-                              <span style={styles.cellName}>{sq.ownerName.length > 9 ? initials(sq.ownerName) : sq.ownerName}</span>
+                              <span style={styles.cellName}>{isMine ? "ME" : sq.ownerName.length > 9 ? initials(sq.ownerName) : sq.ownerName}</span>
                             ) : sq?.status === "pending" ? (
-                              "…"
+                              <span style={styles.cellPlainNumber}>…</span>
                             ) : (
-                              ""
+                              <span style={styles.cellPlainNumber}>{id + 1}</span>
                             )}
                           </button>
                         </div>
@@ -1384,9 +1383,20 @@ function getStyles(theme: Theme): any {
     },
     boardScroll: { position: "relative", zIndex: 2, overflowX: "auto", paddingBottom: 4, paddingTop: 20 },
     axisAwayLabel: { fontFamily: "'Space Mono', monospace", fontSize: 12, color: theme.accent, marginBottom: 6, marginLeft: 44, textShadow: "0 1px 3px rgba(0,0,0,0.8)" },
-    boardGridOuter: { display: "flex", gap: 10, minWidth: 560 },
+    boardGridOuter: { display: "flex", gap: 12, minWidth: 860 },
     gridPlate: { background: "rgba(0,0,0,0.4)", borderRadius: 10, padding: 8, boxShadow: `inset 0 0 0 1px ${theme.accentSofter}` },
-    axisHomeLabel: { writingMode: "vertical-rl", transform: "rotate(180deg)", fontFamily: "'Space Mono', monospace", fontSize: 13, color: theme.accent, display: "flex", alignItems: "center" },
+    axisHomeLabelWrap: { width: 30, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" },
+    axisHomeLabelText: {
+      display: "inline-block",
+      width: 220,
+      textAlign: "center" as const,
+      transform: "rotate(-90deg)",
+      fontFamily: "'Space Mono', monospace",
+      fontSize: 13,
+      color: theme.accent,
+      textShadow: "0 1px 3px rgba(0,0,0,0.8)",
+      whiteSpace: "nowrap" as const,
+    },
     endzoneBottomText: {
       display: "flex",
       alignItems: "center",
@@ -1400,32 +1410,35 @@ function getStyles(theme: Theme): any {
     endzoneBottomTag: { fontSize: 10, letterSpacing: "0.08em", color: theme.chalkDim },
     headerRow: { display: "flex" },
     bodyRow: { display: "flex" },
-    cornerCell: { width: 44, height: 44, flexShrink: 0 },
-    numCell: { width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Space Mono', monospace", fontSize: 15, color: theme.accent, fontWeight: 700, flexShrink: 0 },
-    cellSlot: { position: "relative", width: 48, height: 48, flexShrink: 0 },
-    cellRevealed: { transform: "scale(1.14)", zIndex: 5, boxShadow: "0 4px 14px rgba(0,0,0,0.45)" },
+    cornerCell: { width: 56, height: 56, flexShrink: 0 },
+    numCell: { width: 56, height: 56, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Space Mono', monospace", fontSize: 18, color: theme.accent, fontWeight: 700, flexShrink: 0 },
+    cellSlot: { position: "relative", width: 72, height: 72, flexShrink: 0 },
+    cellRevealed: { transform: "scale(1.1)", zIndex: 5, boxShadow: "0 4px 14px rgba(0,0,0,0.45)" },
     revealBubble: { position: "absolute", bottom: "calc(100% + 8px)", left: "50%", transform: "translateX(-50%)", background: theme.ink, border: `1.5px solid ${theme.accent}`, borderRadius: 8, padding: "8px 12px", whiteSpace: "nowrap", zIndex: 30, textAlign: "center", boxShadow: "0 8px 20px rgba(0,0,0,0.5)", animation: "popIn 0.15s ease-out", pointerEvents: "none" },
-    revealName: { display: "block", fontFamily: "'Anton', sans-serif", fontSize: 19, letterSpacing: "0.02em", color: theme.chalk },
-    revealHint: { display: "block", fontFamily: "'Space Mono', monospace", fontSize: 9, color: theme.accent, marginTop: 2 },
+    revealName: { display: "block", fontFamily: "'Anton', sans-serif", fontSize: 20, letterSpacing: "0.02em", color: theme.chalk },
+    revealHint: { display: "block", fontFamily: "'Space Mono', monospace", fontSize: 10, color: theme.accent, marginTop: 2 },
     cell: {
-      width: 46,
-      height: 46,
+      width: 68,
+      height: 68,
       flexShrink: 0,
-      margin: 1,
-      borderRadius: 6,
-      border: "1.5px solid rgba(20,20,20,0.85)",
+      margin: 2,
+      borderRadius: 8,
+      border: "2px solid rgba(20,20,20,0.85)",
       background: "#F4F2EA",
       color: "#15171A",
-      fontSize: 15,
+      fontSize: 24,
       fontFamily: "'Space Mono', monospace",
       fontWeight: 700,
       cursor: "pointer",
       padding: 0,
       position: "relative",
       transition: "transform 0.15s ease-out, box-shadow 0.15s ease-out",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
     },
-    cellNumber: { position: "absolute", top: 2, left: 3, fontSize: 8, fontWeight: 400, opacity: 0.5, lineHeight: 1 },
-    cellName: { fontSize: 9, fontWeight: 700, lineHeight: 1.1, padding: "0 3px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%", display: "block" },
+    cellPlainNumber: { fontSize: 24, fontWeight: 700, lineHeight: 1 },
+    cellName: { fontSize: 13, fontWeight: 700, lineHeight: 1.15, padding: "0 4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%", display: "block" },
     cellFilled: { background: "#FFFFFF", border: `2px solid ${theme.ink}` },
     cellMine: { background: theme.mineSoft, border: `2px solid ${theme.accent}` },
     cellPending: { background: theme.pendingSoft, border: `1.5px dashed ${theme.pendingAccent}`, color: "#EFEFEF" },
