@@ -325,13 +325,26 @@ export async function computeAndSaveWinner(
   return next;
 }
 
-// --- Full board reset (squares, digits, quarters, AMOE claims — keeps settings/pin) ---
+// --- Full board reset (squares, digits, quarters, AMOE claims, team/config settings) ---
 
+/**
+ * A true hard reset for starting a brand new game on this board: clears
+ * every square, the drawn digits, all quarter scores/winners, every AMOE
+ * free-entry claim (so the same emails can enter again), and the board's
+ * config (team names, house cut, forward/backward split, payout split) —
+ * config goes back to DEFAULT_SETTINGS since getBoardSettings() falls
+ * back to defaults whenever CONFIG_KEY is missing.
+ *
+ * This is intentionally the ONLY thing that touches team names. Editing
+ * and saving team names via updateBoardSettings()/saveTeams() must never
+ * trigger this — that's a separate, non-destructive action.
+ */
 export async function resetBoard(board: Board): Promise<void> {
   const keys = Array.from({ length: 100 }, (_, i) => SQUARE_KEY(board, i));
   await Promise.all(keys.map((k) => kv.del(k)));
   await kv.del(DIGITS_KEY(board));
   await kv.del(QUARTERS_KEY(board));
+  await kv.del(CONFIG_KEY(board));
 
   // Also clear AMOE claims so a "new game" lets the same emails get a
   // free entry again — otherwise anyone who used their free square last
