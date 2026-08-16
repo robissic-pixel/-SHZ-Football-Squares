@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 // ============================================================================
 // SWINEHEADZ SQUARES — two independent boards (Silver $10 / Gold $20)
@@ -272,13 +272,23 @@ function BoardPanel({ boardKey, theme }: { boardKey: BoardKey; theme: Theme }) {
     setTimeout(() => setToast(""), 2800);
   };
 
+  // Guards against a race where an older in-flight poll resolves AFTER a
+  // newer request (e.g. the refresh right after an admin reset) — without
+  // this, a stale response can land last and silently flip the board back
+  // to old data, which is exactly what "reset flickers back and forth"
+  // looks like. Only the response matching the most recent request id is
+  // ever applied to state.
+  const requestIdRef = useRef(0);
+
   const load = useCallback(
     async (silent?: boolean) => {
+      const requestId = ++requestIdRef.current;
       try {
         if (!silent) setLoading(true);
         const headers: HeadersInit = adminSecret ? { "x-admin-secret": adminSecret } : {};
         const res = await fetch(`/api/squares?board=${boardKey}`, { headers, cache: "no-store" });
         const data = await res.json();
+        if (requestId !== requestIdRef.current) return; // a newer request has since started — discard
         setSquares(data.squares);
         setDigits(data.digits);
         setSettings(data.settings);
