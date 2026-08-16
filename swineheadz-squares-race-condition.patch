@@ -1,0 +1,39 @@
+--- SwineheadzSquaresApp.original.jsx	2026-08-16 15:37:31.697523336 +0000
++++ SwineheadzSquaresApp.fixed.jsx	2026-08-16 15:37:31.565775101 +0000
+@@ -261,6 +261,10 @@
+   const [checkoutDraft, setCheckoutDraft] = useState("");
+   const pollRef = useRef(null);
+   const savingRef = useRef(false);
++  // Bumped every time a save() starts. Any load() whose response resolves
++  // after a newer save has begun is stale and must be discarded — otherwise
++  // a slow in-flight poll can silently overwrite a fresh reset/save with old data.
++  const stateVersionRef = useRef(0);
+ 
+   const [isAdmin, setIsAdmin] = useState(false);
+   const [showPinModal, setShowPinModal] = useState(false);
+@@ -282,9 +286,15 @@
+ 
+   const load = useCallback(
+     async (silent) => {
++      const versionAtRequest = stateVersionRef.current;
+       try {
+         if (!silent) setLoading(true);
+         const res = await window.storage.get(STORAGE_KEY, true);
++        // A save started (or is in progress) after this load began — its
++        // response is stale, so drop it instead of clobbering newer state.
++        if (savingRef.current || stateVersionRef.current !== versionAtRequest) {
++          return;
++        }
+         if (res && res.value) {
+           const parsed = JSON.parse(res.value);
+           setState({ ...defaultState(config), ...parsed, pending: parsed.pending || {} });
+@@ -306,6 +316,9 @@
+     async (next) => {
+       try {
+         savingRef.current = true;
++        // Bump immediately so any load() already in flight gets invalidated
++        // when it resolves, even if it resolves after this save finishes.
++        stateVersionRef.current += 1;
+         if (!window.storage || typeof window.storage.set !== "function") {
+           throw new Error("storage API not available in this environment");
+         }
