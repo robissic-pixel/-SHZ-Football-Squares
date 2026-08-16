@@ -246,12 +246,26 @@ function BoardPanel({ boardKey, theme }: { boardKey: BoardKey; theme: Theme }) {
   const [secretError, setSecretError] = useState("");
   const [adminSecret, setAdminSecret] = useState("");
 
+  // Admin sessions are per-tab (sessionStorage), shared across both boards,
+  // so switching between Silver and Gold doesn't silently drop admin mode —
+  // that was making admin-only controls (like manual assign, or reset)
+  // appear to randomly disappear.
+  useEffect(() => {
+    const saved = typeof window !== "undefined" ? window.sessionStorage.getItem("shz_admin_secret") : null;
+    if (saved) {
+      setAdminSecret(saved);
+      setIsAdmin(true);
+    }
+  }, []);
+
   const [teamDraft, setTeamDraft] = useState({ home: "", away: "" });
   const [flipping, setFlipping] = useState(false);
   const [flipRow, setFlipRow] = useState<number[] | null>(null);
   const [flipCol, setFlipCol] = useState<number[] | null>(null);
   const [confirmingRedraw, setConfirmingRedraw] = useState(false);
   const [confirmingReset, setConfirmingReset] = useState(false);
+  const [assigningId, setAssigningId] = useState<number | null>(null);
+  const [assignNameInput, setAssignNameInput] = useState("");
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -263,7 +277,7 @@ function BoardPanel({ boardKey, theme }: { boardKey: BoardKey; theme: Theme }) {
       try {
         if (!silent) setLoading(true);
         const headers: HeadersInit = adminSecret ? { "x-admin-secret": adminSecret } : {};
-        const res = await fetch(`/api/squares?board=${boardKey}`, { headers });
+        const res = await fetch(`/api/squares?board=${boardKey}`, { headers, cache: "no-store" });
         const data = await res.json();
         setSquares(data.squares);
         setDigits(data.digits);
@@ -324,6 +338,7 @@ function BoardPanel({ boardKey, theme }: { boardKey: BoardKey; theme: Theme }) {
       setShowPinModal(false);
       setSecretInput("");
       setSecretError("");
+      if (typeof window !== "undefined") window.sessionStorage.setItem("shz_admin_secret", candidate);
       showToast("Admin unlocked.");
     } catch {
       setSecretError("Could not verify right now — check your connection and try again.");
@@ -390,15 +405,22 @@ function BoardPanel({ boardKey, theme }: { boardKey: BoardKey; theme: Theme }) {
     }
   };
 
-  const adminClaimDirect = async (r: number, c: number) => {
-    const name = window.prompt("Name to assign this square to (e.g. paid by cash):", "");
-    if (!name || !name.trim()) return;
+  const adminClaimDirect = (r: number, c: number) => {
+    setAssigningId(r * GRID + c);
+    setAssignNameInput("");
+  };
+
+  const submitAssign = async () => {
+    if (assigningId === null || !assignNameInput.trim()) return;
+    const name = assignNameInput.trim();
     try {
-      await adminFetch("/api/admin/square", { squareId: r * GRID + c, action: "assign", name: name.trim() });
-      showToast(`Square assigned to ${name.trim()}.`);
+      await adminFetch("/api/admin/square", { squareId: assigningId, action: "assign", name });
+      showToast(`Square #${assigningId + 1} assigned to ${name}.`);
+      setAssigningId(null);
+      setAssignNameInput("");
       load();
     } catch (e: any) {
-      showToast(e.message || "Failed to assign square.");
+      showToast(e.message || "Failed to assign square — check that your admin login is still valid.");
     }
   };
 
@@ -543,10 +565,23 @@ function BoardPanel({ boardKey, theme }: { boardKey: BoardKey; theme: Theme }) {
     setConfirmingReset(false);
     try {
       await adminFetch("/api/admin/reset", {});
+      // Clear local state immediately rather than waiting on the next
+      // fetch — otherwise a slow/failed refetch (or the 5s poll racing
+      // with a stale response) can leave the old digits/squares visible
+      // for a moment and look like reset silently did nothing.
+      setSquares(Array.from({ length: 100 }, (_, i) => ({ id: i, status: "open" as const })));
+      setDigits(null);
+      setQuarters({
+        Q1: { home: "", away: "", winner: null },
+        Q2: { home: "", away: "", winner: null },
+        Q3: { home: "", away: "", winner: null },
+        Q4: { home: "", away: "", winner: null },
+        F: { home: "", away: "", winner: null },
+      });
       showToast("Board reset.");
-      load();
+      await load();
     } catch (e: any) {
-      showToast(e.message || "Failed to reset board.");
+      showToast(e.message || "Failed to reset board — check that your admin login is still valid.");
     }
   };
 
@@ -613,12 +648,46 @@ function BoardPanel({ boardKey, theme }: { boardKey: BoardKey; theme: Theme }) {
         </div>
       )}
 
+      {assigningId !== null && (
+        <div style={styles.modalOverlay} onClick={() => setAssigningId(null)}>
+          <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.panelLabel}>Assign square #{assigningId + 1}</div>
+            <p style={styles.hint}>For a buyer who paid you outside Whop (cash, Venmo, etc).</p>
+            <input
+              style={styles.input}
+              placeholder="Buyer's name"
+              value={assignNameInput}
+              autoFocus
+              onChange={(e) => setAssignNameInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submitAssign()}
+            />
+            <button style={{ ...styles.primaryBtn, marginTop: 12, opacity: assignNameInput.trim() ? 1 : 0.5 }} onClick={submitAssign} disabled={!assignNameInput.trim()}>
+              Assign square
+            </button>
+            <button style={{ ...styles.ghostBtn, marginTop: 8 }} onClick={() => setAssigningId(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       <div style={styles.viewToggleRow}>
         {isAdmin ? (
           <>
             <span style={styles.adminBadge}>ADMIN · {meta.label.toUpperCase()}</span>
             <button style={styles.linkBtn} onClick={() => setIsAdmin(false)}>
               View as player
+            </button>
+            <button
+              style={styles.linkBtn}
+              onClick={() => {
+                setIsAdmin(false);
+                setAdminSecret("");
+                if (typeof window !== "undefined") window.sessionStorage.removeItem("shz_admin_secret");
+                showToast("Logged out of admin.");
+              }}
+            >
+              Log out
             </button>
           </>
         ) : (
@@ -1016,10 +1085,130 @@ function BoardPanel({ boardKey, theme }: { boardKey: BoardKey; theme: Theme }) {
 }
 
 // ============================================================================
+// LockScreen — front-door member gate. Shows ONLY the logo and a plain
+// 1-100 keypad (no prices, no team names, no rules) until the visitor taps
+// the correct number sequence, e.g. 15 → 76 → 89 → 34 → 56 → 23.
+// ============================================================================
+
+function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
+  const theme = THEMES.gold;
+  const [sequence, setSequence] = useState<number[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  const tapNumber = (n: number) => {
+    if (submitting) return;
+    setError("");
+    setSequence((s) => [...s, n]);
+  };
+  const undoLast = () => setSequence((s) => s.slice(0, -1));
+  const clearAll = () => setSequence([]);
+
+  const submit = async () => {
+    if (sequence.length === 0 || submitting) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      const res = await fetch("/api/unlock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sequence }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error || "Incorrect code.");
+        setSequence([]);
+        setSubmitting(false);
+        return;
+      }
+      onUnlocked();
+    } catch {
+      setError("Could not verify right now — check your connection and try again.");
+      setSubmitting(false);
+    }
+  };
+
+  const s = lockStyles(theme);
+  return (
+    <div style={{ ...s.page, background: pageTurfBackground(theme) }}>
+      <style>{fontImport + keyframes}</style>
+      <div style={s.card}>
+        <img src="/logo.webp" alt="Swineheadz Network" style={s.logo} />
+        <h1 style={s.title}>SWINEHEADZ SQUARES</h1>
+        <p style={s.subtitle}>Members only — enter your number combo to continue.</p>
+
+        <div style={s.chipRow}>
+          {sequence.length === 0 ? (
+            <span style={s.chipEmpty}>Tap squares in order…</span>
+          ) : (
+            sequence.map((n, i) => (
+              <span key={i} style={s.chip}>
+                {n}
+              </span>
+            ))
+          )}
+        </div>
+        {error && <div style={s.errorBox}>{error}</div>}
+
+        <div style={s.keypad}>
+          {Array.from({ length: 100 }, (_, i) => i + 1).map((n) => (
+            <button key={n} style={s.key} onClick={() => tapNumber(n)} disabled={submitting}>
+              {n}
+            </button>
+          ))}
+        </div>
+
+        <div style={s.actionRow}>
+          <button style={s.ghostBtn} onClick={undoLast} disabled={submitting || sequence.length === 0}>
+            Undo
+          </button>
+          <button style={s.ghostBtn} onClick={clearAll} disabled={submitting || sequence.length === 0}>
+            Clear
+          </button>
+          <button style={{ ...s.primaryBtn, opacity: sequence.length === 0 || submitting ? 0.5 : 1 }} onClick={submit} disabled={sequence.length === 0 || submitting}>
+            {submitting ? "Checking…" : "Unlock"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function lockStyles(theme: Theme): any {
+  return {
+    page: { minHeight: "100vh", fontFamily: "'Inter', sans-serif", display: "flex", alignItems: "center", justifyContent: "center", padding: "24px 16px" },
+    card: { width: "100%", maxWidth: 520, textAlign: "center" },
+    logo: { width: "clamp(90px, 22vw, 140px)", height: "auto", objectFit: "contain", filter: "drop-shadow(0 10px 22px rgba(0,0,0,0.55))" },
+    title: { fontFamily: "'Anton', sans-serif", fontSize: "clamp(24px, 6vw, 36px)", letterSpacing: "0.03em", margin: "10px 0 4px", color: "#F3EEDF" },
+    subtitle: { fontFamily: "'Space Mono', monospace", fontSize: 12, color: "#B9C9BE", marginBottom: 18 },
+    chipRow: { display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 6, minHeight: 34, marginBottom: 10 },
+    chipEmpty: { fontFamily: "'Space Mono', monospace", fontSize: 12, color: "#7c8a83" },
+    chip: { fontFamily: "'Space Mono', monospace", fontWeight: 700, fontSize: 13, background: theme.accent, color: theme.ink, padding: "4px 10px", borderRadius: 6 },
+    errorBox: { fontFamily: "'Space Mono', monospace", fontSize: 12, color: "#FF9B8A", marginBottom: 10 },
+    keypad: { display: "grid", gridTemplateColumns: "repeat(10, 1fr)", gap: 4, background: "rgba(0,0,0,0.3)", padding: 8, borderRadius: 12, boxShadow: "inset 0 0 30px rgba(0,0,0,0.4)" },
+    key: {
+      aspectRatio: "1",
+      minWidth: 0,
+      borderRadius: 5,
+      border: "1px solid rgba(20,20,20,0.85)",
+      background: "#F4F2EA",
+      color: "#15171A",
+      fontFamily: "'Space Mono', monospace",
+      fontSize: 11,
+      fontWeight: 700,
+      cursor: "pointer",
+    },
+    actionRow: { display: "flex", gap: 8, marginTop: 16 },
+    ghostBtn: { flex: 1, padding: "10px 12px", borderRadius: 8, border: `1.5px solid ${theme.accent}`, background: "transparent", color: theme.accent, fontWeight: 600, fontSize: 13, cursor: "pointer" },
+    primaryBtn: { flex: 2, padding: "10px 12px", borderRadius: 8, border: "none", background: theme.accent, color: theme.ink, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: "'Space Mono', monospace" },
+  };
+}
+
+// ============================================================================
 // App shell — logo, brand header, tab switcher, yard ticker
 // ============================================================================
 
-export default function SwineheadzSquaresApp() {
+function SquaresApp() {
   const [activeKey, setActiveKey] = useState<BoardKey>("silver");
   const theme = THEMES[activeKey];
 
@@ -1054,6 +1243,34 @@ export default function SwineheadzSquaresApp() {
       </main>
     </div>
   );
+}
+
+export default function SwineheadzSquaresApp() {
+  const [checkingLock, setCheckingLock] = useState(true);
+  const [unlocked, setUnlocked] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/unlock/status", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => setUnlocked(!!d.unlocked))
+      .catch(() => setUnlocked(false))
+      .finally(() => setCheckingLock(false));
+  }, []);
+
+  if (checkingLock) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0A2014" }}>
+        <style>{fontImport + keyframes}</style>
+        <div style={{ width: 10, height: 10, borderRadius: "50%", background: "#D9A63E", animation: "dotPulse 1s infinite" }} />
+      </div>
+    );
+  }
+
+  if (!unlocked) {
+    return <LockScreen onUnlocked={() => setUnlocked(true)} />;
+  }
+
+  return <SquaresApp />;
 }
 
 // ============================================================================

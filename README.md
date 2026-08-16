@@ -43,11 +43,30 @@ In your Whop dashboard:
 Project → **Settings → Environment Variables**:
 - `APP_URL` — your deployed URL, no trailing slash
 - `ADMIN_SECRET` — any long random string (protects the digit-randomize endpoint)
+- `LOCK_COMBO` — the member front-door combo, as a comma-separated list of
+  numbers 1-100, e.g. `LOCK_COMBO=15,76,89,34,56,23`. Visitors see only
+  the logo and a plain numbered keypad (no prices, no team names, no
+  rules) until they tap these numbers **in this exact order**. Share the
+  combo with your members however you'd share a door code (group chat,
+  text, etc).
+- `LOCK_SECRET` — any long random string, used to sign the unlock cookie
+  so it can't be forged. Different from `ADMIN_SECRET` — don't reuse it.
+
+This lock is a **soft gate**, not a real security boundary — it keeps
+casual visitors and search engines from seeing pricing/rules before
+you're ready, but a determined person could still call the API routes
+directly. The real protection around money is still Whop checkout and
+the webhook signature check. See `lib/lock.ts` for details.
+
+Unlock sessions last **9 hours** per visitor (cookie-based) before they'd
+need to re-enter the combo.
 
 ## 5. Deploy
 
 Redeploy from the Vercel dashboard (or push another commit). Visit your
-URL — you should see a Silver/Gold tab switcher above the 10x10 grid.
+URL — you should land on the member lock screen (logo + numbered keypad
+only) instead of the board. Enter your `LOCK_COMBO` in order to see the
+Silver/Gold tab switcher and the 10x10 grid.
 
 ## 6. Test before going live
 

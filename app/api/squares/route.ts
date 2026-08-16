@@ -35,5 +35,8 @@ export async function GET(req: NextRequest) {
     pendingExpiresAt: isAdminRequest ? s.pendingExpiresAt : undefined,
   }));
 
-  return NextResponse.json({ board: boardParam, squares: publicSquares, digits, settings, quarters });
+  return NextResponse.json(
+    { board: boardParam, squares: publicSquares, digits, settings, quarters },
+    { headers: { "Cache-Control": "no-store, max-age=0" } }
+  );
 }
